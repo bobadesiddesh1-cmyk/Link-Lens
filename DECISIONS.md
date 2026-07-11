@@ -96,9 +96,12 @@ Everything else follows the brief verbatim.
 ## Icons
 
 - Generated at build-author time by `icons/make_icons.py` (pure-stdlib PNG writer,
-  committed for reproducibility) — a teal rounded square with a white magnifier-lens
-  ring and a coral chain-link dot. The PNGs are committed; the script is not needed at
-  runtime and is not referenced by the manifest.
+  committed for reproducibility) — **two interlocked chain links** on a transparent
+  background: back link in the teal→cyan gradient, front link in coral→amber, with a
+  cut-gap weave. Deliberately NOT the generic "glyph in a rounded square" template.
+  The same mark is inlined as SVG in the side panel and shown via `icon48.png` in the
+  popup header. The PNGs are committed; the script is not needed at runtime and is
+  not referenced by the manifest.
 
 ## Misc
 

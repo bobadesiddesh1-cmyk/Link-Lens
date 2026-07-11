@@ -11,6 +11,25 @@
   var host = null;
   var shadow = null;
 
+  // Inline brand mark (interlocked links) — matches icons/make_icons.py.
+  var LOGO_SVG =
+    '<svg class="mark" viewBox="0 0 48 48" width="20" height="20" aria-hidden="true">' +
+    '<defs>' +
+    '<linearGradient id="llg1" x1="0" y1="48" x2="48" y2="0" gradientUnits="userSpaceOnUse">' +
+    '<stop offset="0" stop-color="#0A7A70"/><stop offset="1" stop-color="#22D3EE"/></linearGradient>' +
+    '<linearGradient id="llg2" x1="0" y1="48" x2="48" y2="0" gradientUnits="userSpaceOnUse">' +
+    '<stop offset="0" stop-color="#EA580C"/><stop offset="1" stop-color="#FBBF24"/></linearGradient>' +
+    '<mask id="llcut"><rect width="48" height="48" fill="#fff"/>' +
+    '<rect x="19.92" y="16.08" width="23.04" height="15.84" rx="7.92" fill="none" stroke="#000" ' +
+    'stroke-width="8.88" transform="rotate(-45 24 24)"/></mask>' +
+    '</defs>' +
+    '<g fill="none" stroke-width="5.52">' +
+    '<rect x="5.04" y="16.08" width="23.04" height="15.84" rx="7.92" stroke="url(#llg1)" ' +
+    'mask="url(#llcut)" transform="rotate(-45 24 24)"/>' +
+    '<rect x="19.92" y="16.08" width="23.04" height="15.84" rx="7.92" stroke="url(#llg2)" ' +
+    'transform="rotate(-45 24 24)"/>' +
+    '</g></svg>';
+
   var CSS = [
     ':host { all: initial; }',
     '* { box-sizing: border-box; margin: 0; padding: 0; }',
@@ -32,7 +51,9 @@
     '  color: #FFFFFF; flex: 0 0 auto;',
     '}',
     '.head .brand { display: flex; align-items: center; justify-content: space-between; }',
-    '.head .name { font-weight: 800; font-size: 15px; letter-spacing: .02em; }',
+    '.head .name { font-weight: 800; font-size: 15px; letter-spacing: .02em;',
+    '  display: inline-flex; align-items: center; gap: 8px; }',
+    '.head .mark { background: rgba(255,255,255,0.92); border-radius: 6px; padding: 2px; }',
     '.head .count { font-size: 26px; font-weight: 800; margin-top: 4px; }',
     '.head .sub { font-size: 11px; opacity: .9; }',
     '.iconbtn {',
@@ -161,7 +182,7 @@
 
     panel.innerHTML =
       '<div class="head">' +
-      '  <div class="brand"><span class="name">🔍 Link Lens</span>' +
+      '  <div class="brand"><span class="name">' + LOGO_SVG + 'Link Lens</span>' +
       '    <button class="iconbtn" type="button" aria-label="Close panel">✕</button></div>' +
       '  <div class="count">' + data.suggestions.length + '</div>' +
       '  <div class="sub">internal link opportunit' + (data.suggestions.length === 1 ? 'y' : 'ies') +

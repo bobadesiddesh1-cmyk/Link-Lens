@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
 """Link Lens icon generator (build-author tool, not used at runtime).
 
-Draws the brand mark — a Deep Ocean teal rounded square with a white
-magnifier-lens ring and a Sunset-coral link dot — using only the Python
-standard library (zlib + struct PNG writer), and writes icon{16,32,48,128}.png.
+Brand mark: two interlocked chain links on a diagonal — the back link in
+the Deep Ocean teal→cyan gradient, the front link in the Sunset
+coral→amber gradient — on a TRANSPARENT background (no generic rounded
+square). Where the front link crosses the back one, the back link is cut
+with a small gap, the standard flat "link" weave.
 
+Pure Python stdlib (zlib + struct PNG writer), SDF-based anti-aliasing.
 Run from the icons/ directory:  python3 make_icons.py
 """
 import math
 import struct
 import zlib
 
-TEAL_TOP = (13, 148, 136)     # #0D9488
-CYAN_BOTTOM = (6, 182, 212)   # #06B6D4
-WHITE = (255, 255, 255)
-CORAL = (249, 115, 22)        # #F97316
+TEAL_A = (10, 122, 112)     # deep teal
+TEAL_B = (34, 211, 238)     # cyan  #22D3EE
+CORAL_A = (234, 88, 12)     # deep coral #EA580C
+CORAL_B = (251, 191, 36)    # amber #FBBF24
 
 
 def png_bytes(size, pixels):
@@ -34,74 +37,71 @@ def png_bytes(size, pixels):
 
 
 def lerp(a, b, t):
-    return tuple(round(a[i] + (b[i] - a[i]) * t) for i in range(3))
+    t = max(0.0, min(1.0, t))
+    return tuple(a[i] + (b[i] - a[i]) * t for i in range(3))
+
+
+def dist_to_segment(px, py, ax, ay, bx, by):
+    vx, vy = bx - ax, by - ay
+    L2 = vx * vx + vy * vy
+    if L2 == 0:
+        return math.hypot(px - ax, py - ay)
+    t = max(0.0, min(1.0, ((px - ax) * vx + (py - ay) * vy) / L2))
+    return math.hypot(px - (ax + vx * t), py - (ay + vy * t))
 
 
 def draw(size):
     s = float(size)
-    radius = s * 0.22            # rounded-square corner radius
-    # lens geometry (slightly up-left so the handle fits)
-    lens_cx, lens_cy = s * 0.44, s * 0.44
-    lens_r = s * 0.24
-    ring_w = max(1.2, s * 0.075)
-    dot_r = s * 0.10             # coral link dot inside the lens
-    handle_w = max(1.2, s * 0.085)
+    # Diagonal axis, lower-left → upper-right.
+    ux, uy = math.cos(math.radians(-45)), math.sin(math.radians(-45))
+    cx, cy = s * 0.5, s * 0.5
 
-    def rounded_square_alpha(x, y):
-        """1 inside the rounded square, 0 outside (with 1px soft edge)."""
-        pad = s * 0.03
-        lo, hi = pad, s - pad
-        cx = min(max(x, lo + radius), hi - radius)
-        cy = min(max(y, lo + radius), hi - radius)
-        d = math.hypot(x - cx, y - cy)
-        edge = radius
-        if x < lo or x > hi or y < lo or y > hi:
-            return 0.0
-        return max(0.0, min(1.0, edge - d + 0.8))
+    # Link geometry (fractions of size, tuned for legibility down to 16px).
+    off = s * 0.155          # each link center's offset from the middle
+    half = s * 0.075         # half-length of the capsule centerline
+    R = s * 0.165            # ring radius (centerline of the band)
+    w = s * 0.115            # band thickness
+    gap = max(1.0, s * 0.035)  # cut gap around the front link
 
-    def ring_alpha(x, y):
-        d = math.hypot(x - lens_cx, y - lens_cy)
-        return max(0.0, min(1.0, ring_w / 2 - abs(d - lens_r) + 0.6))
+    def link_sdf(px, py, ccx, ccy):
+        """Signed distance to the link band (<=0 inside)."""
+        ax, ay = ccx - ux * half, ccy - uy * half
+        bx, by = ccx + ux * half, ccy + uy * half
+        return abs(dist_to_segment(px, py, ax, ay, bx, by) - R) - w / 2
 
-    def dot_alpha(x, y):
-        d = math.hypot(x - lens_cx, y - lens_cy)
-        return max(0.0, min(1.0, dot_r - d + 0.6))
+    # back link lower-left, front link upper-right
+    c1 = (cx - ux * off, cy - uy * off)
+    c2 = (cx + ux * off, cy + uy * off)
 
-    def handle_alpha(x, y):
-        # segment from lens edge (45°) to corner
-        x0 = lens_cx + lens_r * math.cos(math.radians(45))
-        y0 = lens_cy + lens_r * math.sin(math.radians(45))
-        x1, y1 = s * 0.76, s * 0.76
-        vx, vy = x1 - x0, y1 - y0
-        length2 = vx * vx + vy * vy
-        t = max(0.0, min(1.0, ((x - x0) * vx + (y - y0) * vy) / length2))
-        d = math.hypot(x - (x0 + vx * t), y - (y0 + vy * t))
-        return max(0.0, min(1.0, handle_w / 2 - d + 0.6))
+    def coverage(sdf):
+        return max(0.0, min(1.0, 0.5 - sdf))
 
     rows = []
     for j in range(size):
         row = []
         for i in range(size):
             x, y = i + 0.5, j + 0.5
-            bg_a = rounded_square_alpha(x, y)
-            if bg_a <= 0:
+            d_back = link_sdf(x, y, *c1)
+            d_front = link_sdf(x, y, *c2)
+
+            a_front = coverage(d_front)
+            # back link is cut where the (dilated) front link passes
+            a_back = coverage(d_back) * (1.0 - coverage(d_front - gap))
+
+            # gradients run along the diagonal axis
+            t = ((x - cx) * ux + (y - cy) * uy) / s + 0.5
+            back_col = lerp(TEAL_A, TEAL_B, t)
+            front_col = lerp(CORAL_A, CORAL_B, t)
+
+            # composite: front over back over transparent
+            a = a_front + a_back * (1 - a_front)
+            if a <= 0.003:
                 row.append((0, 0, 0, 0))
                 continue
-            base = lerp(TEAL_TOP, CYAN_BOTTOM, (x + y) / (2 * s))
-            r, g, b = base
-            # white lens ring + handle
-            wa = max(ring_alpha(x, y), handle_alpha(x, y))
-            if wa > 0:
-                r = round(r + (WHITE[0] - r) * wa)
-                g = round(g + (WHITE[1] - g) * wa)
-                b = round(b + (WHITE[2] - b) * wa)
-            # coral dot (under the ring so the ring stays crisp)
-            da = dot_alpha(x, y) * (1 - wa)
-            if da > 0:
-                r = round(r + (CORAL[0] - r) * da)
-                g = round(g + (CORAL[1] - g) * da)
-                b = round(b + (CORAL[2] - b) * da)
-            row.append((r, g, b, round(255 * bg_a)))
+            r = (front_col[0] * a_front + back_col[0] * a_back * (1 - a_front)) / a
+            g = (front_col[1] * a_front + back_col[1] * a_back * (1 - a_front)) / a
+            b = (front_col[2] * a_front + back_col[2] * a_back * (1 - a_front)) / a
+            row.append((round(r), round(g), round(b), round(255 * a)))
         rows.append(row)
     return rows
 
