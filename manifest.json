@@ -3,7 +3,7 @@
   "name": "Link Lens — Internal Linking Opportunity Finder",
   "short_name": "Link Lens",
   "version": "1.0.0",
-  "description": "Highlights the exact sentences on any page that should link to other pages of your site — with suggested anchor text and target URL. Works on any CMS. 100% local.",
+  "description": "Highlights the sentences that should link to other pages of your site, with anchor text and target URL. Any CMS. 100% local.",
   "permissions": ["storage", "activeTab", "scripting"],
   "background": {
     "service_worker": "background.js"
