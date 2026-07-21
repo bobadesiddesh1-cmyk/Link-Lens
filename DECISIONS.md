@@ -55,6 +55,29 @@ Everything else follows the brief verbatim.
 - **Sitemap fetch timeout:** 10 s per request via `AbortController`, so a hanging
   sitemap can't wedge a scan.
 
+## Matching engine v2 (1.1.0)
+
+v1 matched exact word forms only, required every slug token, keyed the inverted
+index on the first token only, and treated `www.example.com` sitemap URLs as
+cross-origin — which produced zero results on most real sites. v2 (validated
+against live blog.cloudflare.com and css-tricks.com articles):
+
+- **Light stemming** (plurals, -ies/-y, -ing, -ed, trailing -e, y→i) applied to
+  both slug tokens and page words.
+- **www/scheme-tolerant site identity** (`siteKey`) everywhere: sitemap
+  discovery, target filtering, self-exclusion, already-linked detection.
+- **Inverted index keyed by every token**, not just the first.
+- **Match types**: exact (consecutive stems) > loose (all tokens in a 12-word
+  window) > partial (n-1 of n tokens for n ≥ 3, head keyword required).
+- **Phrases may cross inline tags** (em/strong/span) but never block boundaries;
+  the highlighter wraps one segment per text node.
+- **Noise controls**: generic single-word targets dropped (/about/ etc.);
+  multi-word slugs that degrade to one token dropped ("ai-platform" → "platform");
+  locale-prefixed duplicates collapse to the original (before the 2,000 cap, and
+  lastmod ties break toward shorter URLs); one suggestion per anchor phrase; one
+  suggestion per text span.
+- Index cache carries a version number; older caches rebuild automatically.
+
 ## Matching
 
 - **Matches are constrained to a single DOM text node.** Slug phrases are 1–4 words;

@@ -43,24 +43,40 @@
 
   /**
    * Apply highlights for suggestions produced by matcher.match().
-   * Each suggestion gets an id (its array index). Matches sharing a text
-   * node are handled in one replacement pass over that node.
+   * Each suggestion gets an id (its array index). A match may cross
+   * inline tags, so it is wrapped as one segment PER text node; all
+   * segments share the suggestion id (the first is the primary span
+   * used for focus/pulse). Link words never get wrapped.
    */
   function apply(suggestions, words, onClick) {
     clear(); // idempotent re-scan
     clickHandler = onClick || null;
 
-    // Group matches by their text node, in document order per node.
+    // Split each suggestion into per-text-node segments, then group by node.
     var byNode = new Map();
     suggestions.forEach(function (s, id) {
-      var node = words[s.startIdx].node;
-      var list = byNode.get(node);
-      if (!list) { list = []; byNode.set(node, list); }
-      list.push({
-        id: id,
-        from: words[s.startIdx].start,
-        to: words[s.endIdx].end
-      });
+      var curNode = null, from = 0, to = 0, isFirst = true;
+      function flush() {
+        if (!curNode) return;
+        var list = byNode.get(curNode);
+        if (!list) { list = []; byNode.set(curNode, list); }
+        list.push({ id: id, from: from, to: to, primary: isFirst });
+        isFirst = false;
+        curNode = null;
+      }
+      for (var i = s.startIdx; i <= s.endIdx; i++) {
+        var word = words[i];
+        if (word.inLink) continue;
+        if (word.node === curNode) {
+          to = word.end;
+        } else {
+          flush();
+          curNode = word.node;
+          from = word.start;
+          to = word.end;
+        }
+      }
+      flush();
     });
 
     byNode.forEach(function (matches, textNode) {
@@ -85,7 +101,8 @@
       kept.forEach(function (m) {
         if (m.from > cursor) inserted.push(doc.createTextNode(data.slice(cursor, m.from)));
         var span = makeSpan(doc, data.slice(m.from, m.to), m.id);
-        spansById.set(m.id, span);
+        // The primary (first) segment is the focus/pulse anchor.
+        if (m.primary || !spansById.has(m.id)) spansById.set(m.id, span);
         inserted.push(span);
         cursor = m.to;
       });

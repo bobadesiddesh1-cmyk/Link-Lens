@@ -58,16 +58,24 @@ has a **Rebuild index** button to refresh it on demand.
 
 - Main content is extracted (`<article>` / `<main>` / largest text block), excluding
   nav, footer, sidebar, and the text of existing links.
+- Words and slug tokens are **stemmed**, so "researching keywords" matches a
+  `keyword-research` page, and site identity is **www/scheme tolerant**, so a
+  sitemap listing `www.example.com` still works while you browse `example.com`.
 - Every indexed target (except the current page and its canonical) is scanned for:
-  - **exact match** — the whole phrase, consecutive words, case-insensitive,
-    whole-word; else
-  - **loose match** — all phrase tokens within a **10-word window**.
-- Matches inside existing `<a>` tags are skipped. A first occurrence inside a
-  heading is allowed but flagged **"in heading — prefer body"**.
-- If the page **already links** to a target anywhere, that target is excluded and
-  listed separately under **"already linked ✓"**.
-- **One suggestion per target URL** (best = earliest exact > earliest loose), capped
-  at **30 suggestions**, ranked exact > loose, then shallower target depth first.
+  - **exact match** — the whole phrase, consecutive stems, case-insensitive; else
+  - **loose match** — all phrase tokens within a **12-word window**, any order; else
+  - **partial match** — for 3+ token slugs, all but one token in the window,
+    and the slug's head keyword must be among them.
+- Phrases may cross inline tags (`keyword <em>research</em>`) but never cross a
+  block boundary. Matches inside existing `<a>` tags are skipped. A first
+  occurrence inside a heading is allowed but flagged **"in heading — prefer body"**.
+- If the page **already links** to a target anywhere (any locale/URL variant of
+  it), that target is excluded and listed under **"already linked ✓"**.
+- Locale-duplicate sitemap entries (`/zh-cn/post` next to `/post`) collapse into
+  the original; generic single-word pages (`/about/`, `/contact/`) are never
+  suggested; one suggestion per anchor phrase and per text span.
+- Capped at **30 suggestions**, ranked exact > loose > partial, then shallower
+  target depth first.
 
 **Performance:** target token sets are precompiled into an inverted index
 (first token → candidate targets), so a 2,000-target × 5,000-word page is a single

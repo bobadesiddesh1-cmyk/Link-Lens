@@ -77,6 +77,7 @@
     '  letter-spacing: .05em; padding: 1px 7px; border-radius: 999px; margin-left: 6px; vertical-align: 1px; }',
     '.tag.exact { background: #DCFCE7; color: #15803D; }',
     '.tag.loose { background: #FEF3C7; color: #B45309; }',
+    '.tag.partial { background: #E0F2FE; color: #0369A1; }',
     '.tag.heading { background: #FFEDD5; color: #C2410C; }',
     '.linked { padding: 7px 10px; font-size: 12px; color: #475569; }',
     '.linked .url { font-size: 11px; color: #64748B; word-break: break-all; }',

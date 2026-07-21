@@ -17,23 +17,45 @@
    * URLs whose slug yields no usable tokens are dropped (nothing to match).
    * Deduped by normalized URL.
    */
+  var LOCALE_PREFIX = /^\/[a-z]{2}(-[a-z]{2})?\//i;
+
   function buildTargets(entries, origin) {
+    // First pass: collect every siteKey so locale-prefixed duplicates
+    // (/zh-cn/post-slug next to /post-slug) can defer to the original.
+    var allKeys = new Set();
+    for (var p = 0; p < entries.length; p++) {
+      var k = tok.siteKey(entries[p].loc);
+      if (k) allKeys.add(k);
+    }
+
     var seen = new Set();
     var targets = [];
     for (var i = 0; i < entries.length; i++) {
       var loc = entries[i].loc;
-      var norm = tok.normalizeUrl(loc);
-      if (!norm || seen.has(norm)) continue;
-      if (new URL(loc).origin !== origin) continue; // same-origin only
+      var key = tok.siteKey(loc);
+      if (!key || seen.has(key)) continue;
+      // Skip a locale-prefixed URL when its unprefixed sibling is indexed too.
+      try {
+        var path = new URL(loc).pathname;
+        if (LOCALE_PREFIX.test(path)) {
+          var host = key.split('/')[0];
+          var stripped = host + path.replace(LOCALE_PREFIX, '/').replace(/\/+$/, '');
+          if ((stripped !== key) && allKeys.has(stripped || host + '/')) continue;
+        }
+      } catch (e) { /* keep the entry */ }
+      // Same SITE (www/scheme tolerant) — sitemaps often list www.example.com
+      // while the user browses example.com; strict origin checks empty the index.
+      if (!tok.sameSite(loc, origin)) continue;
       var slug = tok.lastPathSegment(loc);
       var derived = tok.slugToPhrase(slug);
       if (!derived) continue;
-      seen.add(norm);
+      seen.add(key);
       targets.push({
         url: loc,
-        normUrl: norm,
+        siteKey: key,
         phrase: derived.phrase,
         tokens: derived.tokens,
+        stems: derived.stems,
         depth: tok.urlDepth(loc)
       });
     }
@@ -51,13 +73,12 @@
     for (var i = 0; i < anchors.length && out.length < MAX_URLS; i++) {
       var href = anchors[i].getAttribute('href');
       if (!href) continue;
-      var norm = tok.normalizeUrl(href, doc.baseURI);
-      if (!norm) continue;
+      var key = tok.siteKey(href, doc.baseURI);
+      if (!key || seen.has(key)) continue;
       var abs;
       try { abs = new URL(href, doc.baseURI); } catch (e) { continue; }
-      if (abs.origin !== origin) continue;
-      if (seen.has(norm)) continue;
-      seen.add(norm);
+      if (!tok.sameSite(abs.href, origin)) continue;
+      seen.add(key);
       out.push({ loc: abs.href, lastmod: null });
     }
     return out;

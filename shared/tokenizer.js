@@ -23,6 +23,15 @@
     'vs', 'etc', 'page', 'html', 'htm', 'php', 'aspx', 'index'
   ]);
 
+  // Single-token targets that are too generic to suggest ("/about/", "/blog/").
+  var GENERIC_SINGLE = new Set([
+    'about', 'contact', 'home', 'blog', 'news', 'privacy', 'terms', 'legal',
+    'login', 'signin', 'signup', 'register', 'search', 'sitemap', 'category',
+    'categories', 'tag', 'tags', 'author', 'authors', 'archive', 'archives',
+    'faq', 'faqs', 'help', 'support', 'careers', 'jobs', 'team', 'services',
+    'products', 'shop', 'store', 'cart', 'checkout', 'account', 'feed'
+  ]);
+
   /**
    * Tokenize an arbitrary string into lowercase word tokens.
    * Words are runs of Unicode letters/digits (so "don't" -> ["don", "t"],
@@ -35,13 +44,36 @@
   }
 
   /**
+   * Light stemmer so "researching keywords" matches "keyword-research".
+   * Handles regular plurals, -ies/-y, -ing, -ed, trailing -e, and y→i,
+   * which covers the inflections that actually appear in web copy.
+   */
+  function stem(w) {
+    if (w.length < 4) return w;
+    if (/ies$/.test(w) && w.length > 4) w = w.slice(0, -3) + 'y';
+    else if (/s$/.test(w) && !/(ss|us|is)$/.test(w)) w = w.slice(0, -1);
+    if (/ing$/.test(w) && w.length > 5) {
+      w = w.slice(0, -3);
+      if (/([a-z])\1$/.test(w)) w = w.slice(0, -1); // running -> run
+    } else if (/ed$/.test(w) && w.length > 4) {
+      w = w.slice(0, -2);
+      if (/([a-z])\1$/.test(w)) w = w.slice(0, -1);
+    }
+    if (/e$/.test(w) && w.length > 3) w = w.slice(0, -1); // price/pricing -> pric
+    if (/y$/.test(w) && w.length > 3) w = w.slice(0, -1) + 'i'; // study/studies -> studi
+    return w;
+  }
+
+  /**
    * Derive target keywords from a URL slug (last path segment).
    * Split on - and _ (and any non-alphanumeric), drop stopwords,
    * drop tokens shorter than 3 chars, drop pure numbers.
    * Keep a 1-4 token phrase (first 4 tokens if longer — slugs usually
    * lead with the head keyword).
    *
-   * Returns { phrase, tokens } or null when nothing usable remains.
+   * Returns { phrase, tokens, stems } or null when nothing usable remains.
+   * Single-token targets that are generic page names (/about/, /blog/)
+   * are dropped — they'd fire on every page.
    */
   function slugToPhrase(slug) {
     if (!slug) return null;
@@ -58,7 +90,15 @@
       if (tokens.length === 4) break;
     }
     if (tokens.length === 0) return null;
-    return { phrase: tokens.join(' '), tokens: tokens };
+    if (tokens.length === 1) {
+      if (GENERIC_SINGLE.has(tokens[0])) return null;
+      // A multi-word slug reduced to one surviving token ("ai-platform" ->
+      // "platform") has lost its meaning — a single-word anchor for it
+      // would be misleading, so drop the target.
+      var meaningful = raw.filter(function (w) { return !/^[0-9]+$/.test(w); });
+      if (meaningful.length >= 2) return null;
+    }
+    return { phrase: tokens.join(' '), tokens: tokens, stems: tokens.map(stem) };
   }
 
   /**
@@ -101,12 +141,45 @@
     }
   }
 
+  /**
+   * Site-level identity of a URL, tolerant of the www/non-www and
+   * http/https variants that make sitemap URLs differ from the address
+   * bar (the #1 cause of "zero matches"). Ignores scheme, strips a
+   * leading "www.", drops hash/query, collapses trailing slash.
+   * Returns null for unparseable/non-http URLs.
+   */
+  function siteKey(href, baseUrl) {
+    try {
+      var u = baseUrl ? new URL(href, baseUrl) : new URL(href);
+      if (u.protocol !== 'http:' && u.protocol !== 'https:') return null;
+      var host = u.host.toLowerCase().replace(/^www\./, '');
+      var path = u.pathname.replace(/\/+$/, '');
+      return host + (path || '/');
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /** True when two URLs belong to the same site (www/scheme tolerant). */
+  function sameSite(urlA, urlB) {
+    try {
+      var ha = new URL(urlA).host.toLowerCase().replace(/^www\./, '');
+      var hb = new URL(urlB).host.toLowerCase().replace(/^www\./, '');
+      return ha === hb;
+    } catch (e) {
+      return false;
+    }
+  }
+
   ns.tokenizer = {
     STOPWORDS: STOPWORDS,
     tokenizeText: tokenizeText,
+    stem: stem,
     slugToPhrase: slugToPhrase,
     lastPathSegment: lastPathSegment,
     urlDepth: urlDepth,
-    normalizeUrl: normalizeUrl
+    normalizeUrl: normalizeUrl,
+    siteKey: siteKey,
+    sameSite: sameSite
   };
 })(self.__linkLens = self.__linkLens || {});

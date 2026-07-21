@@ -8,6 +8,8 @@
   if (ns.storage) return; // idempotent re-injection guard
 
   var INDEX_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+  // Bump when the target shape changes so stale caches rebuild themselves.
+  var INDEX_VERSION = 2;
 
   function indexKey(origin) { return 'll_index:' + origin; }
   function bulkKey(origin) { return 'll_bulk:' + origin; }
@@ -41,6 +43,7 @@
   function getIndex(origin) {
     return get(indexKey(origin)).then(function (entry) {
       if (!entry || !entry.builtAt) return null;
+      if (entry.version !== INDEX_VERSION) return null; // old shape: rebuild
       if (Date.now() - entry.builtAt > INDEX_TTL_MS) return null;
       return entry;
     });
@@ -49,6 +52,7 @@
   function setIndex(origin, index) {
     index.builtAt = Date.now();
     index.origin = origin;
+    index.version = INDEX_VERSION;
     return set(indexKey(origin), index);
   }
 

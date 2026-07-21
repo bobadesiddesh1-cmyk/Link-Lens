@@ -43,6 +43,7 @@
     '}',
     '.badge.exact { background: #ECFDF5; color: #047857; }',
     '.badge.loose { background: #FEF3C7; color: #B45309; }',
+    '.badge.partial { background: #E0F2FE; color: #0369A1; }',
     '.badge.heading { background: #FFF7ED; color: #C2410C; }',
     '.close {',
     '  background: rgba(255,255,255,0.18); border: 0; color: #fff; cursor: pointer;',
@@ -124,7 +125,7 @@
     card.innerHTML =
       '<div class="head">' +
       '  <span class="title">Link Lens' +
-      '    <span class="badge ' + (suggestion.matchType === 'exact' ? 'exact' : 'loose') + '">' +
+      '    <span class="badge ' + suggestion.matchType + '">' +
              suggestion.matchType + ' match</span>' +
       (suggestion.inHeading ? '<span class="badge heading">in heading</span>' : '') +
       '  </span>' +

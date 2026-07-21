@@ -78,7 +78,12 @@
     return out;
   }
 
-  /** Sort most-recent lastmod first; entries without lastmod keep order, last. */
+  /**
+   * Sort most-recent lastmod first; entries without lastmod keep order,
+   * last. Lastmod ties break toward shorter URLs, so when the 2,000 cap
+   * trims a large sitemap the original pages survive ahead of their
+   * locale-prefixed duplicates (which share the same lastmod).
+   */
   function sortByLastmodDesc(entries) {
     return entries.map(function (e, i) { return { e: e, i: i }; })
       .sort(function (a, b) {
@@ -86,15 +91,55 @@
         if (la === null && lb === null) return a.i - b.i;
         if (la === null) return 1;
         if (lb === null) return -1;
-        return lb - la;
+        if (lb !== la) return lb - la;
+        if (a.e.loc.length !== b.e.loc.length) return a.e.loc.length - b.e.loc.length;
+        return a.i - b.i;
       })
       .map(function (w) { return w.e; });
   }
 
   function isGz(url) { return /\.xml\.gz(\?|#|$)/i.test(url); }
 
+  var LOCALE_PREFIX = /^\/[a-z]{2}(-[a-z]{2})?\//i;
+
+  /**
+   * Remove entries like /zh-cn/post-slug when /post-slug is also present.
+   * Sites that put EVERYTHING under a locale prefix are unaffected (no
+   * unprefixed sibling exists, so nothing is dropped).
+   */
+  function dropLocaleDuplicates(entries) {
+    var keys = new Set();
+    var i, k;
+    for (i = 0; i < entries.length; i++) {
+      k = ns.tokenizer.siteKey(entries[i].loc);
+      if (k) keys.add(k);
+    }
+    var out = [];
+    for (i = 0; i < entries.length; i++) {
+      var loc = entries[i].loc;
+      k = ns.tokenizer.siteKey(loc);
+      var drop = false;
+      if (k) {
+        try {
+          var path = new URL(loc).pathname;
+          if (LOCALE_PREFIX.test(path)) {
+            var host = k.split('/')[0];
+            var strippedPath = path.replace(LOCALE_PREFIX, '/').replace(/\/+$/, '');
+            var sibling = host + (strippedPath || '/');
+            if (sibling !== k && keys.has(sibling)) drop = true;
+          }
+        } catch (e) { /* keep */ }
+      }
+      if (!drop) out.push(entries[i]);
+    }
+    return out;
+  }
+
+  // Same SITE, not same origin: sitemaps routinely list www.example.com
+  // while the user browses example.com (or https vs http). Treating that
+  // as cross-origin silently empties the whole index.
   function sameOrigin(url, origin) {
-    try { return new URL(url).origin === origin; } catch (e) { return false; }
+    return ns.tokenizer.sameSite(url, origin);
   }
 
   /** Parse Sitemap: lines out of robots.txt (same-origin only). */
@@ -206,6 +251,9 @@
         if (isGz(result.urls[i].loc)) { result.skippedGz++; continue; }
         kept.push(result.urls[i]);
       }
+      // Drop locale-prefixed duplicates (/zh-cn/post next to /post) BEFORE
+      // capping, so translations don't crowd the originals out of the cap.
+      kept = dropLocaleDuplicates(kept);
       // Enforce the total URL cap, keeping most recent by <lastmod>.
       if (kept.length > MAX_URLS) {
         kept = sortByLastmodDesc(kept).slice(0, MAX_URLS);

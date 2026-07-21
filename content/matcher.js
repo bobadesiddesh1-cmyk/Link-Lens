@@ -1,12 +1,19 @@
 /**
- * Link Lens — content/matcher.js
- * Main-content extraction + opportunity matching. Pure w.r.t. the DOM: it
- * only READS the document, so the same code runs on the live page and on
- * DOMParser documents in bulk mode.
+ * Link Lens — content/matcher.js  (v2 matching engine)
+ * Main-content extraction + opportunity matching. Only READS the DOM, so
+ * the same code runs on the live page and on DOMParser documents (bulk).
  *
- * Performance: targets are precompiled into an inverted index keyed by
- * first token, so a 2,000-target × 5,000-word page is a single O(words)
- * sweep with tiny candidate lists per position.
+ * v2 fixes the "zero matches on real sites" failure modes:
+ *  - words and slug tokens are STEMMED ("researching keywords" matches
+ *    "keyword-research")
+ *  - the inverted index is keyed by EVERY target token, not just the first
+ *  - phrases may cross inline element boundaries (keyword <em>research</em>)
+ *    as long as they stay inside one block element
+ *  - 3+ token slugs accept a PARTIAL match (all but one token in a window)
+ *  - site identity is www/scheme tolerant (see tokenizer.siteKey)
+ *
+ * Match types, ranked: exact (consecutive stems) > loose (all tokens in a
+ * 12-word window, any order) > partial (n-1 of n tokens, n >= 3).
  */
 (function (ns) {
   'use strict';
@@ -15,9 +22,13 @@
   var tok = ns.tokenizer;
 
   var MAX_SUGGESTIONS = 30;
-  var LOOSE_WINDOW = 10; // words
+  var LOOSE_WINDOW = 12; // words
   var SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'SVG',
-    'NAV', 'FOOTER', 'ASIDE', 'FORM', 'IFRAME', 'BUTTON', 'SELECT', 'CODE', 'PRE']);
+    'NAV', 'FOOTER', 'ASIDE', 'FORM', 'IFRAME', 'BUTTON', 'SELECT', 'CODE', 'PRE',
+    'HEAD', 'TITLE']);
+  var BLOCK_TAGS = new Set(['P', 'DIV', 'LI', 'TD', 'TH', 'SECTION', 'ARTICLE',
+    'BLOCKQUOTE', 'FIGCAPTION', 'DD', 'DT', 'MAIN', 'HEADER', 'SUMMARY',
+    'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'BODY']);
   var WORD_RE = /[\p{L}\p{N}]+/gu;
 
   /* ------------------------------------------------------------------ *
@@ -31,8 +42,7 @@
   /**
    * Pick the main content element: <article> / <main> / [role=main],
    * else descend from <body> into whichever child holds the dominant
-   * share of the text until no single child dominates ("largest text
-   * block").
+   * share of the text until no single child dominates.
    */
   function findContentRoot(doc) {
     var candidates = ['article', 'main', '[role="main"]'];
@@ -45,7 +55,6 @@
       }
       if (best && bestLen > 200) return best;
     }
-    // Largest-text-block descent.
     var node = doc.body || doc.documentElement;
     if (!node) return doc.documentElement;
     for (var depth = 0; depth < 12; depth++) {
@@ -73,15 +82,18 @@
     return false;
   }
 
+  function nearestBlock(el, stopAt) {
+    for (var n = el; n && n !== stopAt && n.nodeType === 1; n = n.parentElement) {
+      if (BLOCK_TAGS.has(n.tagName)) return n;
+    }
+    return el;
+  }
+
   /**
    * Walk text nodes under the content root and emit the word stream:
-   *   [{ w, node, start, end, inHeading, inLink }]
-   * - w:      lowercase token
-   * - node:   the Text node (live DOM or DOMParser node)
-   * - start/end: character offsets of the word inside node.data
-   * - inHeading: token sits inside h1–h6
-   * - inLink: token sits inside an existing <a> (never matched, but kept
-   *   in the stream so word-window distances stay honest)
+   *   [{ w (stem), raw, node, start, end, block, inHeading, inLink }]
+   * `block` is the nearest block-level ancestor — matches never cross it,
+   * but they MAY cross inline elements (em/strong/span) inside it.
    */
   function extractWords(root, doc) {
     var words = [];
@@ -112,14 +124,17 @@
       var p = textNode.parentElement;
       var inLink = hasAncestor(p, function (el) { return el.tagName === 'A'; }, root.parentElement);
       var inHeading = hasAncestor(p, function (el) { return /^H[1-6]$/.test(el.tagName); }, root.parentElement);
+      var block = nearestBlock(p, root.parentElement);
       WORD_RE.lastIndex = 0;
       var m;
       while ((m = WORD_RE.exec(data))) {
         words.push({
-          w: m[0].toLowerCase(),
+          w: tok.stem(m[0].toLowerCase()),
+          raw: m[0],
           node: textNode,
           start: m.index,
           end: m.index + m[0].length,
+          block: block,
           inHeading: inHeading,
           inLink: inLink
         });
@@ -128,25 +143,25 @@
     return words;
   }
 
-  /** Every URL the page links to anywhere (normalized), for "already linked". */
+  /** Every URL the page links to anywhere (siteKey form), for "already linked". */
   function collectPageLinks(doc, baseUrl) {
     var set = new Set();
     var anchors = doc.querySelectorAll('a[href]');
     for (var i = 0; i < anchors.length; i++) {
-      var norm = tok.normalizeUrl(anchors[i].getAttribute('href'), baseUrl);
-      if (norm) set.add(norm);
+      var key = tok.siteKey(anchors[i].getAttribute('href'), baseUrl);
+      if (key) set.add(key);
     }
     return set;
   }
 
-  /** Normalized identities of the current page: its URL + its canonical. */
+  /** siteKey identities of the current page: its URL + its canonical. */
   function currentPageIdentities(doc, pageUrl) {
     var ids = new Set();
-    var self = tok.normalizeUrl(pageUrl);
-    if (self) ids.add(self);
+    var own = tok.siteKey(pageUrl);
+    if (own) ids.add(own);
     var canon = doc.querySelector('link[rel="canonical"]');
     if (canon) {
-      var c = tok.normalizeUrl(canon.getAttribute('href'), pageUrl);
+      var c = tok.siteKey(canon.getAttribute('href'), pageUrl);
       if (c) ids.add(c);
     }
     return ids;
@@ -156,77 +171,102 @@
    * Matching
    * ------------------------------------------------------------------ */
 
-  /** Inverted index: first token → [targets]. Precompiled once per scan. */
+  /** Inverted index: every stem of every target → [targets]. */
   function buildInvertedIndex(targets) {
     var map = new Map();
     for (var i = 0; i < targets.length; i++) {
-      var first = targets[i].tokens[0];
-      var list = map.get(first);
-      if (!list) { list = []; map.set(first, list); }
-      list.push(targets[i]);
+      var stems = targets[i].stems || targets[i].tokens.map(tok.stem);
+      targets[i].stems = stems;
+      var added = new Set();
+      for (var k = 0; k < stems.length; k++) {
+        if (added.has(stems[k])) continue;
+        added.add(stems[k]);
+        var list = map.get(stems[k]);
+        if (!list) { list = []; map.set(stems[k], list); }
+        list.push(targets[i]);
+      }
     }
     return map;
   }
 
   /**
-   * Exact match test at position i: target tokens appear consecutively,
-   * all inside the SAME text node, none inside a link.
+   * Exact match test at position i: target stems appear consecutively,
+   * same block, none inside a link (inline tags are fine).
    * Returns the end word index or -1.
    */
-  function exactAt(words, i, tokens) {
-    var node = words[i].node;
-    for (var k = 0; k < tokens.length; k++) {
+  function exactAt(words, i, stems) {
+    var block = words[i].block;
+    for (var k = 0; k < stems.length; k++) {
       var word = words[i + k];
-      if (!word || word.w !== tokens[k]) return -1;
-      if (word.node !== node || word.inLink) return -1;
+      if (!word || word.w !== stems[k]) return -1;
+      if (word.block !== block || word.inLink) return -1;
     }
-    return i + tokens.length - 1;
+    return i + stems.length - 1;
   }
 
   /**
-   * Loose match test at position i: all target tokens appear (any order)
-   * within a LOOSE_WINDOW-word window starting at i, same text node, no
-   * link words. words[i] must be one of the tokens (it's the inverted-
-   * index hit). Returns { end } = index of the last needed token, or null.
+   * Windowed match at position i: how many distinct target stems appear
+   * within LOOSE_WINDOW words (same block, link words don't count as
+   * matches). Returns { hits, first, last } for the matched tokens.
    */
-  function looseAt(words, i, tokens) {
-    var need = new Set(tokens);
-    var node = words[i].node;
-    var lastHit = -1;
+  function windowAt(words, i, stems) {
+    var need = new Set(stems);
+    var block = words[i].block;
+    var first = -1, last = -1;
     var limit = Math.min(words.length, i + LOOSE_WINDOW);
     for (var j = i; j < limit; j++) {
       var word = words[j];
-      if (word.node !== node || word.inLink) break; // window must stay clean
+      if (word.block !== block) break; // never cross a block boundary
+      if (word.inLink) continue;       // can't anchor inside an existing link
       if (need.has(word.w)) {
         need.delete(word.w);
-        lastHit = j;
-        if (need.size === 0) return { end: lastHit };
+        if (first === -1) first = j;
+        last = j;
+        if (need.size === 0) break;
       }
     }
-    return null;
-  }
-
-  /** Slice the original text of one node between two word entries. */
-  function sliceAnchor(words, startIdx, endIdx) {
-    var node = words[startIdx].node;
-    return node.data.slice(words[startIdx].start, words[endIdx].end);
+    return {
+      hits: stems.length - need.size,
+      first: first,
+      last: last,
+      headHit: !need.has(stems[0]) // slug's head keyword was matched
+    };
   }
 
   /**
-   * Extract the sentence around a match from its text node (trimmed to
-   * ~300 chars when the "sentence" is a wall of text).
+   * Anchor text for words[s..e]: exact original text within one node,
+   * node-segments joined with spaces when the phrase crosses inline tags.
+   * Link words are excluded (they are never part of the anchor).
    */
+  function sliceAnchor(words, s, e) {
+    var parts = [];
+    var curNode = null, from = 0, to = 0;
+    for (var i = s; i <= e; i++) {
+      var word = words[i];
+      if (word.inLink) continue;
+      if (word.node === curNode) {
+        to = word.end;
+      } else {
+        if (curNode) parts.push(curNode.data.slice(from, to));
+        curNode = word.node;
+        from = word.start;
+        to = word.end;
+      }
+    }
+    if (curNode) parts.push(curNode.data.slice(from, to));
+    return parts.join(' ').replace(/\s+/g, ' ').trim();
+  }
+
+  /** The sentence around a match, from its first word's text node. */
   function contextSentence(words, startIdx, endIdx) {
     var node = words[startIdx].node;
     var text = node.data;
     var from = words[startIdx].start;
-    var to = words[endIdx].end;
-    // scan back to sentence start
+    var to = Math.min(words[endIdx].node === node ? words[endIdx].end : text.length, text.length);
     var s = 0;
     for (var i = from - 1; i > 0; i--) {
       if (/[.!?]/.test(text[i]) && /\s/.test(text[i + 1] || ' ')) { s = i + 1; break; }
     }
-    // scan forward to sentence end
     var e = text.length;
     for (var j = to; j < text.length - 1; j++) {
       if (/[.!?]/.test(text[j]) && /\s/.test(text[j + 1] || ' ')) { e = j + 1; break; }
@@ -239,31 +279,22 @@
     return sentence;
   }
 
-  /**
-   * Decide whether candidate match `b` beats current best `a` for one
-   * target: exact > loose; within a type, body > heading; then earliest.
-   */
+  var TYPE_RANK = { exact: 3, loose: 2, partial: 1 };
+
+  /** Does candidate `b` beat current best `a` for one target? */
   function better(a, b) {
     if (!a) return true;
-    if (a.matchType !== b.matchType) return b.matchType === 'exact';
-    if (a.inHeading !== b.inHeading) return !b.inHeading;
+    if (TYPE_RANK[a.matchType] !== TYPE_RANK[b.matchType]) {
+      return TYPE_RANK[b.matchType] > TYPE_RANK[a.matchType];
+    }
+    if (a.inHeading !== b.inHeading) return !b.inHeading; // body beats heading
     return b.startIdx < a.startIdx;
   }
 
   /**
    * The full matching pass.
-   *
-   * @param {Object} opts
-   *   doc      — Document (live or DOMParser)
-   *   pageUrl  — canonical string URL of the page being scanned
-   *   targets  — index targets [{url, normUrl, phrase, tokens, depth}]
-   * @returns {Object} {
-   *   suggestions: [{ url, phrase, anchorText, matchType, inHeading, depth,
-   *                   contextSentence, startIdx, endIdx, words }],
-   *   alreadyLinked: [{url, phrase}],
-   *   capped: bool, wordCount: int
-   * }
-   * `words` (the stream) is returned so the highlighter can reuse node refs.
+   * opts: { doc, pageUrl, targets }
+   * Returns { suggestions, alreadyLinked, capped, wordCount, words }.
    */
   function match(opts) {
     var doc = opts.doc;
@@ -271,60 +302,105 @@
     var selfIds = currentPageIdentities(doc, pageUrl);
     var pageLinks = collectPageLinks(doc, pageUrl);
 
-    var active = [];
-    var alreadyLinked = [];
+    // Group targets by phrase: sitemaps routinely contain locale/duplicate
+    // variants of the same page (/ai-platform, /zh-cn/ai-platform, ...).
+    // One phrase = one suggestion (the shallowest/shortest URL), and if the
+    // page already links ANY variant, the whole phrase counts as linked.
+    var groups = new Map(); // phrase → { linkedUrl, rep }
     for (var i = 0; i < opts.targets.length; i++) {
       var t = opts.targets[i];
-      if (selfIds.has(t.normUrl)) continue; // never suggest linking to self
-      if (pageLinks.has(t.normUrl)) {
-        alreadyLinked.push({ url: t.url, phrase: t.phrase });
+      var key = t.siteKey || tok.siteKey(t.url);
+      t.siteKey = key;
+      if (!key || selfIds.has(key)) continue; // never suggest linking to self
+      var g = groups.get(t.phrase);
+      if (!g) { g = { linkedUrl: null, rep: null }; groups.set(t.phrase, g); }
+      if (pageLinks.has(key)) {
+        if (!g.linkedUrl) g.linkedUrl = t.url;
         continue;
       }
-      active.push(t);
+      if (!g.rep || t.depth < g.rep.depth ||
+          (t.depth === g.rep.depth && t.url.length < g.rep.url.length)) {
+        g.rep = t;
+      }
     }
+
+    var active = [];
+    var alreadyLinked = [];
+    groups.forEach(function (g, phrase) {
+      if (g.linkedUrl) alreadyLinked.push({ url: g.linkedUrl, phrase: phrase });
+      else if (g.rep) active.push(g.rep);
+    });
 
     var root = findContentRoot(doc);
     var words = extractWords(root, doc);
     var inverted = buildInvertedIndex(active);
 
-    var bestByTarget = new Map(); // normUrl → best match record
+    var bestByTarget = new Map(); // siteKey → best match record
 
     for (var pos = 0; pos < words.length; pos++) {
       var word = words[pos];
-      if (word.inLink) continue; // never suggest inside an existing link
+      if (word.inLink) continue;
       var candidates = inverted.get(word.w);
       if (!candidates) continue;
 
       for (var c = 0; c < candidates.length; c++) {
         var target = candidates[c];
-        var current = bestByTarget.get(target.normUrl);
-        // Nothing can beat an exact body match — skip finished targets.
+        var current = bestByTarget.get(target.siteKey);
+        // Nothing beats an exact body match — skip finished targets.
         if (current && current.matchType === 'exact' && !current.inHeading) continue;
 
+        var stems = target.stems;
+        var n = stems.length;
         var rec = null;
-        var exactEnd = exactAt(words, pos, target.tokens);
-        if (exactEnd >= 0) {
-          rec = { matchType: 'exact', startIdx: pos, endIdx: exactEnd };
-        } else if (target.tokens.length > 1) {
-          var loose = looseAt(words, pos, target.tokens);
-          if (loose) rec = { matchType: 'loose', startIdx: pos, endIdx: loose.end };
+
+        // Exact only makes sense anchored at the first token.
+        if (word.w === stems[0]) {
+          var exactEnd = exactAt(words, pos, stems);
+          if (exactEnd >= 0) {
+            rec = { matchType: 'exact', startIdx: pos, endIdx: exactEnd };
+          }
+        }
+        if (!rec && n > 1) {
+          var win = windowAt(words, pos, stems);
+          if (win.hits === n) {
+            rec = { matchType: 'loose', startIdx: win.first, endIdx: win.last };
+          } else if (n >= 3 && win.hits >= n - 1 && win.hits >= 2 && win.headHit) {
+            // Partial matches must include the slug's head keyword —
+            // matching only the generic tail ("generally available") of
+            // "ai-gateway-is-generally-available" is a false positive.
+            rec = { matchType: 'partial', startIdx: win.first, endIdx: win.last };
+          }
         }
         if (!rec) continue;
-        rec.inHeading = word.inHeading;
+        rec.inHeading = words[rec.startIdx].inHeading;
         rec.target = target;
-        if (better(current, rec)) bestByTarget.set(target.normUrl, rec);
+        if (better(current, rec)) bestByTarget.set(target.siteKey, rec);
       }
     }
 
-    // Rank: exact > loose, then shallower depth, then position. Cap at 30.
+    // Rank: exact > loose > partial, then shallower depth, then position.
     var all = Array.from(bestByTarget.values());
     all.sort(function (a, b) {
-      if (a.matchType !== b.matchType) return a.matchType === 'exact' ? -1 : 1;
+      if (a.matchType !== b.matchType) return TYPE_RANK[b.matchType] - TYPE_RANK[a.matchType];
       if (a.target.depth !== b.target.depth) return a.target.depth - b.target.depth;
       return a.startIdx - b.startIdx;
     });
-    var capped = all.length > MAX_SUGGESTIONS;
-    all = all.slice(0, MAX_SUGGESTIONS);
+    // One suggestion per text span: when several targets matched the same
+    // words, keep only the best-ranked one (prevents "Zero Trust" x4 and
+    // stacked highlights that can't all be wrapped).
+    var taken = [];
+    var deduped = [];
+    for (var d = 0; d < all.length; d++) {
+      var r = all[d];
+      var overlaps = taken.some(function (range) {
+        return r.startIdx <= range[1] && r.endIdx >= range[0];
+      });
+      if (overlaps) continue;
+      taken.push([r.startIdx, r.endIdx]);
+      deduped.push(r);
+    }
+    var capped = deduped.length > MAX_SUGGESTIONS;
+    all = deduped.slice(0, MAX_SUGGESTIONS);
 
     var suggestions = all.map(function (rec) {
       return {
