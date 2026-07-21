@@ -39,10 +39,36 @@
     return (el.textContent || '').replace(/\s+/g, ' ').length;
   }
 
+  var SKIP_SELECTOR = 'script,style,noscript,template,svg,nav,footer,aside,' +
+    'form,iframe,button,select,code,pre,head,title';
+
+  /**
+   * Text length EXCLUDING skip-tag subtrees (nav, footer, script, ...).
+   * Plain textContent counts mega-menu link text, which on nav-heavy
+   * sites dominates the page and steers root selection into the header —
+   * whose text the extractor then (rightly) rejects, yielding 0 words.
+   */
+  function effectiveTextLength(el) {
+    var total = textLength(el);
+    var skips = el.querySelectorAll(SKIP_SELECTOR);
+    for (var i = 0; i < skips.length; i++) {
+      // subtract only top-level skip elements (avoid double-subtraction
+      // for nav-inside-form etc.)
+      var p = skips[i].parentElement;
+      var nested = false;
+      while (p && p !== el) {
+        if (SKIP_TAGS.has(p.tagName)) { nested = true; break; }
+        p = p.parentElement;
+      }
+      if (!nested) total -= textLength(skips[i]);
+    }
+    return Math.max(0, total);
+  }
+
   /**
    * Pick the main content element: <article> / <main> / [role=main],
    * else descend from <body> into whichever child holds the dominant
-   * share of the text until no single child dominates.
+   * share of the (effective) text until no single child dominates.
    */
   function findContentRoot(doc) {
     var candidates = ['article', 'main', '[role="main"]'];
@@ -50,7 +76,7 @@
       var els = doc.querySelectorAll(candidates[i]);
       var best = null, bestLen = 0;
       for (var j = 0; j < els.length; j++) {
-        var len = textLength(els[j]);
+        var len = effectiveTextLength(els[j]);
         if (len > bestLen) { bestLen = len; best = els[j]; }
       }
       if (best && bestLen > 200) return best;
@@ -58,12 +84,12 @@
     var node = doc.body || doc.documentElement;
     if (!node) return doc.documentElement;
     for (var depth = 0; depth < 12; depth++) {
-      var total = textLength(node);
+      var total = effectiveTextLength(node);
       if (total === 0) break;
       var dominant = null;
       for (var c = node.firstElementChild; c; c = c.nextElementSibling) {
         if (SKIP_TAGS.has(c.tagName)) continue;
-        if (textLength(c) > total * 0.7) { dominant = c; break; }
+        if (effectiveTextLength(c) > total * 0.7) { dominant = c; break; }
       }
       if (!dominant) break;
       node = dominant;
@@ -333,6 +359,12 @@
 
     var root = findContentRoot(doc);
     var words = extractWords(root, doc);
+    // Safety net: if root selection landed on a subtree with no usable
+    // text, fall back to the whole body (per-node skip rules still apply).
+    if (words.length === 0 && doc.body && root !== doc.body) {
+      root = doc.body;
+      words = extractWords(root, doc);
+    }
     var inverted = buildInvertedIndex(active);
 
     var bestByTarget = new Map(); // siteKey → best match record
@@ -378,10 +410,14 @@
       }
     }
 
-    // Rank: exact > loose > partial, then shallower depth, then position.
+    // Rank: exact > loose > partial; within a type, multi-token phrases
+    // beat single words ("eligibility criteria" > "offered"), then
+    // shallower depth, then position.
     var all = Array.from(bestByTarget.values());
     all.sort(function (a, b) {
       if (a.matchType !== b.matchType) return TYPE_RANK[b.matchType] - TYPE_RANK[a.matchType];
+      var ta = a.target.tokens.length, tb = b.target.tokens.length;
+      if (ta !== tb) return tb - ta;
       if (a.target.depth !== b.target.depth) return a.target.depth - b.target.depth;
       return a.startIdx - b.startIdx;
     });
