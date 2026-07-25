@@ -162,6 +162,17 @@ body {
 .result-label { font-weight: 600; }
 .result-sub { font-size: 11px; color: var(--ink-soft); margin-top: 4px; }
 
+.diagnosis {
+  margin-top: 10px;
+  padding: 8px 10px;
+  font-size: 11px;
+  text-align: left;
+  color: #B45309;
+  background: rgba(251, 191, 36, 0.12);
+  border: 1px dashed var(--amber-400);
+  border-radius: 8px;
+}
+
 .error {
   margin-top: 12px;
   padding: 10px 12px;

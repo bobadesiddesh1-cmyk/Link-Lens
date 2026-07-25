@@ -22,9 +22,10 @@ var CONTENT_FILES = [
   'content/main.js'
 ];
 
-var tab = null;      // active tab
-var origin = null;   // its origin
-var bulkRows = null; // finished bulk rows for CSV download
+var tab = null;         // active tab
+var origin = null;      // its origin
+var bulkRows = null;    // finished bulk rows for CSV download
+var lastSummary = null; // last scan summary, for the debug-info copy
 
 /* ------------------------------------------------------------------ *
  * Helpers
@@ -135,6 +136,15 @@ function runScan(msgType) {
       s.alreadyLinked + ' already linked · ' + s.targetCount + ' targets' +
       (s.shallow ? ' (shallow mode)' : '') +
       ' · matched ' + s.wordCount + ' words in ' + s.elapsedMs + ' ms';
+    if (s.diagnosis) {
+      $('result-diagnosis').textContent = s.diagnosis;
+      show($('result-diagnosis'));
+      lastSummary = s;
+      show($('btn-debug'));
+    } else {
+      hide($('result-diagnosis'));
+      hide($('btn-debug'));
+    }
     show($('scan-result'));
     refreshCacheStatus();
   }).catch(function (err) {
@@ -330,6 +340,17 @@ document.addEventListener('DOMContentLoaded', function () {
   $('tab-bulk').addEventListener('click', function () { switchTab('bulk'); });
 
   $('btn-scan').addEventListener('click', function () { runScan('LL_SCAN'); });
+  $('btn-debug').addEventListener('click', function () {
+    var info = {
+      extension: 'Link Lens ' + chrome.runtime.getManifest().version,
+      page: tab && tab.url,
+      summary: lastSummary
+    };
+    navigator.clipboard.writeText(JSON.stringify(info, null, 2)).then(function () {
+      $('btn-debug').textContent = '✓ Copied — paste it when reporting';
+      setTimeout(function () { $('btn-debug').textContent = 'Copy debug info'; }, 2000);
+    });
+  });
   $('btn-rebuild').addEventListener('click', function () { runScan('LL_REBUILD'); });
   $('btn-clear').addEventListener('click', function () {
     sendToTab({ type: 'LL_CLEAR' }).catch(function () { /* not injected: nothing to clear */ });

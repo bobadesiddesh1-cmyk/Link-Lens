@@ -81,6 +81,7 @@
       alreadyLinked: lastScan.alreadyLinked,
       capped: lastScan.capped,
       indexInfo: lastScan.indexInfo,
+      diagnosis: lastScan.diagnosis || null,
       pageUrl: location.href
     }, {
       onFocus: function (id) {
@@ -143,6 +144,22 @@
       ns.highlighter.apply(result.suggestions, result.words, onHighlightClick);
       renderPanel();
 
+      // When a scan finds nothing, say WHY — a bare zero looks broken.
+      var diagnosis = null;
+      if (result.suggestions.length === 0) {
+        if (result.wordCount === 0) {
+          diagnosis = 'Could not extract readable text from this page (unusual page structure). Try another page of this site — and please report this page.';
+        } else if (index.targets.length === 0) {
+          diagnosis = 'The site index has no usable link targets — the sitemap URLs did not yield keyword slugs.';
+        } else if (result.alreadyLinked.length > 0) {
+          diagnosis = 'No new opportunities: this page already links ' + result.alreadyLinked.length +
+            ' of the matching targets, and no other target phrases appear in its copy (' + result.wordCount + ' words scanned).';
+        } else {
+          diagnosis = 'None of the ' + index.targets.length + ' target phrases appear in this page\'s copy (' +
+            result.wordCount + ' words scanned). Longer articles surface more opportunities.';
+        }
+      }
+
       var summary = {
         suggestions: result.suggestions.length,
         alreadyLinked: result.alreadyLinked.length,
@@ -150,8 +167,10 @@
         elapsedMs: elapsed,
         shallow: index.shallow,
         targetCount: index.targets.length,
-        source: index.source
+        source: index.source,
+        diagnosis: diagnosis
       };
+      lastScan.diagnosis = diagnosis;
       broadcast({ type: 'LL_SCAN_DONE', summary: summary });
       return summary;
     });

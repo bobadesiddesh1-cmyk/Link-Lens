@@ -155,8 +155,9 @@
 
     var sHtml = '';
     if (data.suggestions.length === 0) {
-      sHtml = '<div class="empty">No internal link opportunities found on this page.<br>' +
-        'Try Rebuild Index in the popup if the site changed recently.</div>';
+      sHtml = '<div class="empty">' +
+        escapeHtml(data.diagnosis || 'No internal link opportunities found on this page.') +
+        '<br><br>Try Rebuild Index in the popup if the site changed recently.</div>';
     } else {
       sHtml += '<div class="sect">Opportunities (' + data.suggestions.length + ')</div>';
       data.suggestions.forEach(function (s, id) {
