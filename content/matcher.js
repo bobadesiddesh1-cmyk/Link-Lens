@@ -307,6 +307,17 @@
 
   var TYPE_RANK = { exact: 3, loose: 2, partial: 1 };
 
+  /**
+   * Where a match sits in the copy. Links in the first ~100 words carry
+   * the most weight; matches in the last third of a long page are noted
+   * as deep.
+   */
+  function positionOf(startIdx, totalWords) {
+    if (startIdx < 100) return 'early';
+    if (totalWords > 300 && startIdx > totalWords * 0.7) return 'deep';
+    return 'body';
+  }
+
   /** Does candidate `b` beat current best `a` for one target? */
   function better(a, b) {
     if (!a) return true;
@@ -439,12 +450,18 @@
     all = deduped.slice(0, MAX_SUGGESTIONS);
 
     var suggestions = all.map(function (rec) {
+      // Trim sprawling loose/partial anchors to a natural span (≤6 words) —
+      // editors need "Zero Trust platform", not a 10-word run-on.
+      if (rec.matchType !== 'exact' && rec.endIdx - rec.startIdx > 5) {
+        rec.endIdx = rec.startIdx + 5;
+      }
       return {
         url: rec.target.url,
         phrase: rec.target.phrase,
         depth: rec.target.depth,
         matchType: rec.matchType,
         inHeading: rec.inHeading,
+        position: positionOf(rec.startIdx, words.length),
         anchorText: sliceAnchor(words, rec.startIdx, rec.endIdx),
         contextSentence: contextSentence(words, rec.startIdx, rec.endIdx),
         startIdx: rec.startIdx,
@@ -461,12 +478,56 @@
     };
   }
 
+  /**
+   * Keyword mode: does THIS page mention the keyword (and not yet link
+   * the target)? Used against DOMParser docs of other site pages.
+   *
+   * opts: { doc, pageUrl, stems (keyword stems), targetKey (siteKey) }
+   * Returns { alreadyLinked } or { occurrences: [{anchorText,
+   *   contextSentence, position, matchType}] } (max 3 per page).
+   */
+  function keywordScan(opts) {
+    var links = collectPageLinks(opts.doc, opts.pageUrl);
+    if (opts.targetKey && links.has(opts.targetKey)) return { alreadyLinked: true };
+
+    var root = findContentRoot(opts.doc);
+    var words = extractWords(root, opts.doc);
+    if (words.length === 0 && opts.doc.body && root !== opts.doc.body) {
+      words = extractWords(opts.doc.body, opts.doc);
+    }
+    var stems = opts.stems;
+    var occ = [];
+    for (var pos = 0; pos < words.length && occ.length < 3; pos++) {
+      var word = words[pos];
+      if (word.inLink || word.w !== stems[0]) continue;
+      var rec = null;
+      var exactEnd = exactAt(words, pos, stems);
+      if (exactEnd >= 0) {
+        rec = { matchType: 'exact', s: pos, e: exactEnd };
+      } else if (stems.length > 1) {
+        var win = windowAt(words, pos, stems);
+        if (win.hits === stems.length) rec = { matchType: 'loose', s: win.first, e: win.last };
+      }
+      if (!rec) continue;
+      if (rec.matchType !== 'exact' && rec.e - rec.s > 5) rec.e = rec.s + 5;
+      occ.push({
+        matchType: rec.matchType,
+        position: positionOf(rec.s, words.length),
+        anchorText: sliceAnchor(words, rec.s, rec.e),
+        contextSentence: contextSentence(words, rec.s, rec.e)
+      });
+      pos = rec.e; // don't re-match inside the same span
+    }
+    return { alreadyLinked: false, occurrences: occ, wordCount: words.length };
+  }
+
   ns.matcher = {
     MAX_SUGGESTIONS: MAX_SUGGESTIONS,
     LOOSE_WINDOW: LOOSE_WINDOW,
     findContentRoot: findContentRoot,
     extractWords: extractWords,
     collectPageLinks: collectPageLinks,
-    match: match
+    match: match,
+    keywordScan: keywordScan
   };
 })(self.__linkLens = self.__linkLens || {});

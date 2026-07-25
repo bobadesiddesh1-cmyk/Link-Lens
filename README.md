@@ -90,10 +90,19 @@ sweep over the words — well under 400 ms.
   match type, and a copy-ready `<a href="URL">anchor</a>` snippet with a Copy button.
 - The Shadow-DOM side panel shows the summary count, all suggestions (click →
   scroll + pulse), the "already linked" list, and **Export CSV**:
-  `source_url, anchor_text, target_url, match_type, context_sentence` —
-  your client-deliverable.
+  `source_url, anchor_text, target_url, match_type, position, context_sentence`
+  — your client-deliverable (`position` = early / body / deep in the copy).
 
-### 4. Bulk mode
+### 4. Keyword mode
+
+Popup → **Keyword** tab: enter a target keyword (and optionally the URL it should
+link to — otherwise the best-matching page is auto-picked from the site index).
+Link Lens fetches up to 20 pages of the site (shallowest first, 1 request/sec),
+and lists every page that **mentions the keyword but doesn't link the target yet**
+— with suggested anchor, placement position, and context, exported as CSV. This is
+the "where should I add links to my money page?" workflow.
+
+### 5. Bulk mode
 
 Popup → **Bulk audit** tab: paste up to **20 URLs of the same domain**. Each page is
 fetched same-origin **from the content script of the active tab**, parsed off-DOM

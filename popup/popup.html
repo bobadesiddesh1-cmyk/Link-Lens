@@ -18,6 +18,7 @@
   <nav class="tabs" role="tablist">
     <button id="tab-scan" class="tab active" role="tab" aria-selected="true">Scan page</button>
     <button id="tab-bulk" class="tab" role="tab" aria-selected="false">Bulk audit</button>
+    <button id="tab-kw" class="tab" role="tab" aria-selected="false">Keyword</button>
   </nav>
 
   <!-- ============ SCAN TAB ============ -->
@@ -73,6 +74,29 @@
       <div class="result-sub" id="bulk-sub"></div>
       <button id="btn-bulk-csv" class="cta small">⬇ Download combined CSV</button>
       <button id="btn-bulk-reset" class="ghost">Clear results</button>
+    </div>
+  </section>
+
+  <!-- ============ KEYWORD TAB ============ -->
+  <section id="view-kw" class="view">
+    <p class="hint">Enter a <strong>target keyword</strong> — Link Lens checks up to 20 pages
+      of this site (shallowest first, fetched politely at 1/sec) and lists every page that
+      mentions it but doesn't link to it yet. Keep this tab open on the site while it runs.</p>
+
+    <input id="kw-keyword" type="text" class="text-input" placeholder="keyword, e.g. recurring deposit" spellcheck="false">
+    <input id="kw-target" type="text" class="text-input" placeholder="target URL (optional — auto-picked from the site index)" spellcheck="false">
+
+    <button id="btn-kw" class="cta">Find pages that should link this keyword</button>
+    <button id="btn-kw-cancel" class="ghost hidden">Stop</button>
+
+    <div id="kw-error" class="error hidden"></div>
+    <div id="kw-progress" class="bulk-list hidden"></div>
+
+    <div id="kw-done" class="result hidden">
+      <div class="result-num" id="kw-count">0</div>
+      <div class="result-label">link placements found</div>
+      <div class="result-sub" id="kw-sub"></div>
+      <button id="btn-kw-csv" class="cta small">⬇ Download CSV</button>
     </div>
   </section>
 

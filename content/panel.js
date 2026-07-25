@@ -78,6 +78,7 @@
     '.tag.exact { background: #DCFCE7; color: #15803D; }',
     '.tag.loose { background: #FEF3C7; color: #B45309; }',
     '.tag.partial { background: #E0F2FE; color: #0369A1; }',
+    '.tag.early { background: #CCFBF1; color: #0F766E; }',
     '.tag.heading { background: #FFEDD5; color: #C2410C; }',
     '.linked { padding: 7px 10px; font-size: 12px; color: #475569; }',
     '.linked .url { font-size: 11px; color: #64748B; word-break: break-all; }',
@@ -166,6 +167,7 @@
           '  <span class="anchor">' + escapeHtml(s.anchorText) + '</span>' +
           '  <span class="tag ' + s.matchType + '">' + s.matchType + '</span>' +
           (s.inHeading ? '<span class="tag heading">heading</span>' : '') +
+          (s.position === 'early' ? '<span class="tag early">early</span>' : '') +
           '  <div class="url">→ ' + escapeHtml(s.url) + '</div>' +
           '</div>';
       });

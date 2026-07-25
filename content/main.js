@@ -96,10 +96,10 @@
   function exportCsv() {
     if (!lastScan) return;
     var rows = lastScan.suggestions.map(function (s) {
-      return [location.href, s.anchorText, s.url, s.matchType, s.contextSentence];
+      return [location.href, s.anchorText, s.url, s.matchType, s.position || 'body', s.contextSentence];
     });
     var csv = ns.csv.build(
-      ['source_url', 'anchor_text', 'target_url', 'match_type', 'context_sentence'],
+      ['source_url', 'anchor_text', 'target_url', 'match_type', 'position', 'context_sentence'],
       rows
     );
     ns.csv.download('link-lens-' + location.hostname + '.csv', csv, document);
@@ -217,7 +217,7 @@
             var doc = new DOMParser().parseFromString(html, 'text/html');
             var result = ns.matcher.match({ doc: doc, pageUrl: url, targets: index.targets });
             result.suggestions.forEach(function (s) {
-              rows.push([url, s.anchorText, s.url, s.matchType, s.contextSentence]);
+              rows.push([url, s.anchorText, s.url, s.matchType, s.position || 'body', s.contextSentence]);
             });
             broadcast({
               type: 'LL_BULK_PROGRESS',
@@ -260,6 +260,115 @@
         rows: rows,
         failures: [{ url: '(index)', error: String(err && err.message || err) }],
         total: total
+      };
+      broadcast(payload);
+      return payload;
+    });
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Keyword mode — where should this keyword be linked FROM?
+   * Fetches site pages (from the index, shallowest first, 1/sec) and
+   * reports every page that mentions the keyword but doesn't yet link
+   * the target.
+   * ------------------------------------------------------------------ */
+
+  var KEYWORD_PAGE_LIMIT = 20;
+
+  function pickTargetForKeyword(index, stems) {
+    // Best index target for the keyword = most stem overlap, shallowest.
+    var best = null, bestScore = -1;
+    index.targets.forEach(function (t) {
+      var score = 0;
+      t.stems.forEach(function (st) { if (stems.indexOf(st) !== -1) score++; });
+      if (score > bestScore || (score === bestScore && best && t.depth < best.depth)) {
+        best = t; bestScore = score;
+      }
+    });
+    return bestScore > 0 ? best : null;
+  }
+
+  function runKeyword(keyword, targetUrl, limit) {
+    bulkCancelled = false;
+    bulkRunning = true;
+    var rows = [];
+    var failures = [];
+    var skippedLinked = 0;
+
+    return getIndex(false).then(function (index) {
+      var kwTokens = ns.tokenizer.tokenizeText(keyword)
+        .filter(function (t) { return t.length >= 2; });
+      if (kwTokens.length === 0) throw new Error('Keyword has no usable words.');
+      var stems = kwTokens.map(ns.tokenizer.stem);
+
+      var target = null;
+      if (targetUrl) {
+        target = { url: targetUrl, siteKey: ns.tokenizer.siteKey(targetUrl) };
+      } else {
+        var picked = pickTargetForKeyword(index, stems);
+        if (picked) target = { url: picked.url, siteKey: picked.siteKey };
+      }
+      var targetKey = target ? target.siteKey : null;
+
+      // Pages to check: index URLs, shallowest first, excluding the target.
+      var pages = index.targets
+        .filter(function (t) { return t.siteKey !== targetKey; })
+        .sort(function (a, b) { return a.depth - b.depth; })
+        .slice(0, Math.min(limit || KEYWORD_PAGE_LIMIT, KEYWORD_PAGE_LIMIT))
+        .map(function (t) { return t.url; });
+      var total = pages.length;
+
+      var chain = Promise.resolve();
+      pages.forEach(function (url, i) {
+        chain = chain.then(function () {
+          if (bulkCancelled) return;
+          var started = Date.now();
+          return fetchHtml(url).then(function (html) {
+            var doc = new DOMParser().parseFromString(html, 'text/html');
+            var res = ns.matcher.keywordScan({
+              doc: doc, pageUrl: url, stems: stems, targetKey: targetKey
+            });
+            if (res.alreadyLinked) skippedLinked++;
+            else res.occurrences.forEach(function (o) {
+              rows.push([url, o.anchorText, keyword, target ? target.url : '',
+                o.position, o.contextSentence]);
+            });
+            broadcast({
+              type: 'LL_KEYWORD_PROGRESS', done: i + 1, total: total, url: url,
+              ok: true, found: res.alreadyLinked ? 0 : res.occurrences.length,
+              alreadyLinked: !!res.alreadyLinked
+            });
+          }).catch(function (err) {
+            failures.push({ url: url, error: String(err && err.message || err) });
+            broadcast({
+              type: 'LL_KEYWORD_PROGRESS', done: i + 1, total: total, url: url,
+              ok: false, error: String(err && err.message || err)
+            });
+          }).then(function () {
+            if (i < total - 1 && !bulkCancelled) {
+              var wait = 1000 - (Date.now() - started);
+              if (wait > 0) return delay(wait);
+            }
+          });
+        });
+      });
+      return chain.then(function () {
+        bulkRunning = false;
+        var payload = {
+          type: 'LL_KEYWORD_DONE', cancelled: bulkCancelled,
+          keyword: keyword, targetUrl: target ? target.url : null,
+          rows: rows, failures: failures, skippedLinked: skippedLinked, total: total
+        };
+        broadcast(payload);
+        return payload;
+      });
+    }).catch(function (err) {
+      bulkRunning = false;
+      var payload = {
+        type: 'LL_KEYWORD_DONE', cancelled: false, keyword: keyword,
+        targetUrl: targetUrl || null, rows: rows,
+        failures: [{ url: '(setup)', error: String(err && err.message || err) }],
+        skippedLinked: skippedLinked, total: 0
       };
       broadcast(payload);
       return payload;
@@ -330,6 +439,15 @@
       case 'LL_BULK_CANCEL':
         bulkCancelled = true;
         sendResponse({ ok: true });
+        return;
+
+      case 'LL_KEYWORD_START':
+        if (bulkRunning) {
+          sendResponse({ ok: false, error: 'Another batch is already in progress.' });
+          return;
+        }
+        runKeyword(msg.keyword || '', msg.targetUrl || null, msg.limit);
+        sendResponse({ ok: true, started: true });
         return;
     }
   });

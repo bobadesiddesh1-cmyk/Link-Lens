@@ -201,6 +201,18 @@ body {
 }
 #bulk-urls:focus { outline: 2px solid var(--cyan-500); outline-offset: -1px; }
 
+.text-input {
+  width: 100%;
+  font-size: 12px;
+  color: var(--ink);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 10px;
+  margin-bottom: 8px;
+}
+.text-input:focus { outline: 2px solid var(--cyan-500); outline-offset: -1px; }
+
 .bulk-list {
   margin-top: 12px;
   max-height: 180px;

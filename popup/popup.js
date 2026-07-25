@@ -267,10 +267,100 @@ function restoreBulkState() {
 function downloadBulkCsv() {
   if (!bulkRows) return;
   var csv = ns.csv.build(
-    ['source_url', 'anchor_text', 'target_url', 'match_type', 'context_sentence'],
+    ['source_url', 'anchor_text', 'target_url', 'match_type', 'position', 'context_sentence'],
     bulkRows
   );
   ns.csv.download('link-lens-bulk-' + new URL(origin).hostname + '.csv', csv, document);
+}
+
+/* ------------------------------------------------------------------ *
+ * Keyword tab
+ * ------------------------------------------------------------------ */
+
+var kwRows = null;
+var kwLive = [];
+
+function startKeyword() {
+  hide($('kw-error'));
+  hide($('kw-done'));
+  var keyword = $('kw-keyword').value.trim();
+  if (!keyword) { fail($('kw-error'), 'Enter a keyword first.'); return; }
+  var targetUrl = $('kw-target').value.trim() || null;
+  if (targetUrl) {
+    try {
+      if (new URL(targetUrl).origin !== origin) {
+        fail($('kw-error'), 'Target URL must be on ' + new URL(origin).hostname);
+        return;
+      }
+    } catch (e) { fail($('kw-error'), 'Target URL is not a valid URL.'); return; }
+  }
+  kwLive = [];
+  $('btn-kw').disabled = true;
+  show($('btn-kw-cancel'));
+  renderKwProgress([], 0);
+
+  ensureInjected().then(function () {
+    return sendToTab({ type: 'LL_KEYWORD_START', keyword: keyword, targetUrl: targetUrl });
+  }).then(function (res) {
+    if (!res || !res.ok) {
+      $('btn-kw').disabled = false;
+      hide($('btn-kw-cancel'));
+      fail($('kw-error'), (res && res.error) || 'Could not start.');
+    }
+  }).catch(function (err) {
+    $('btn-kw').disabled = false;
+    hide($('btn-kw-cancel'));
+    fail($('kw-error'), 'Could not start on this page: ' + err.message);
+  });
+}
+
+function renderKwProgress(entries, total) {
+  var box = $('kw-progress');
+  box.innerHTML = '';
+  entries.forEach(function (e) {
+    var row = document.createElement('div');
+    row.className = 'bl-row';
+    row.innerHTML = '<span class="bl-status ' + (e.ok ? 'ok' : 'fail') + '">' +
+      (e.ok ? '✓' : '✕') + '</span>';
+    var url = document.createElement('span');
+    url.className = 'bl-url';
+    url.textContent = e.url + (e.ok ? (e.alreadyLinked ? ' — already linked ✓' : '') : ' — ' + (e.error || 'failed'));
+    var meta = document.createElement('span');
+    meta.className = 'bl-meta';
+    meta.textContent = e.ok && !e.alreadyLinked ? (e.found + ' found') : '';
+    row.appendChild(url); row.appendChild(meta);
+    box.appendChild(row);
+  });
+  if (total === 0 || entries.length < total) {
+    var pending = document.createElement('div');
+    pending.className = 'bl-row';
+    pending.innerHTML = '<span class="bl-status pending">◌</span>' +
+      '<span class="bl-url">checking ' + (entries.length + 1) +
+      (total ? ' of ' + total : '') + '…</span>';
+    box.appendChild(pending);
+  }
+  show(box);
+}
+
+function showKwDone(msg) {
+  kwRows = msg.rows || [];
+  $('kw-count').textContent = kwRows.length;
+  $('kw-sub').textContent =
+    (msg.total || 0) + ' pages checked · ' + (msg.skippedLinked || 0) + ' already link the target · ' +
+    ((msg.failures || []).length) + ' failed' +
+    (msg.targetUrl ? ' · target: ' + msg.targetUrl : '');
+  show($('kw-done'));
+  hide($('btn-kw-cancel'));
+  $('btn-kw').disabled = false;
+}
+
+function downloadKwCsv() {
+  if (!kwRows) return;
+  var csv = ns.csv.build(
+    ['page_url', 'suggested_anchor', 'keyword', 'target_url', 'position', 'context_sentence'],
+    kwRows
+  );
+  ns.csv.download('link-lens-keyword-' + new URL(origin).hostname + '.csv', csv, document);
 }
 
 /* ------------------------------------------------------------------ *
@@ -302,6 +392,15 @@ chrome.runtime.onMessage.addListener(function (msg) {
       status: msg.cancelled ? 'cancelled' : 'done'
     });
   }
+
+  if (msg.type === 'LL_KEYWORD_PROGRESS') {
+    kwLive.push({ url: msg.url, ok: msg.ok, error: msg.error, found: msg.found, alreadyLinked: msg.alreadyLinked });
+    renderKwProgress(kwLive, msg.total);
+  }
+
+  if (msg.type === 'LL_KEYWORD_DONE') {
+    showKwDone(msg);
+  }
 });
 
 /* ------------------------------------------------------------------ *
@@ -309,13 +408,12 @@ chrome.runtime.onMessage.addListener(function (msg) {
  * ------------------------------------------------------------------ */
 
 function switchTab(name) {
-  var scan = name === 'scan';
-  $('tab-scan').classList.toggle('active', scan);
-  $('tab-bulk').classList.toggle('active', !scan);
-  $('tab-scan').setAttribute('aria-selected', String(scan));
-  $('tab-bulk').setAttribute('aria-selected', String(!scan));
-  $('view-scan').classList.toggle('active', scan);
-  $('view-bulk').classList.toggle('active', !scan);
+  ['scan', 'bulk', 'kw'].forEach(function (t) {
+    var on = t === name;
+    $('tab-' + t).classList.toggle('active', on);
+    $('tab-' + t).setAttribute('aria-selected', String(on));
+    $('view-' + t).classList.toggle('active', on);
+  });
 }
 
 document.addEventListener('DOMContentLoaded', function () {
@@ -328,6 +426,7 @@ document.addEventListener('DOMContentLoaded', function () {
       $('btn-scan').disabled = true;
       $('btn-rebuild').disabled = true;
       $('btn-bulk').disabled = true;
+      $('btn-kw').disabled = true;
       return;
     }
     origin = new URL(tab.url).origin;
@@ -338,6 +437,14 @@ document.addEventListener('DOMContentLoaded', function () {
 
   $('tab-scan').addEventListener('click', function () { switchTab('scan'); });
   $('tab-bulk').addEventListener('click', function () { switchTab('bulk'); });
+  $('tab-kw').addEventListener('click', function () { switchTab('kw'); });
+  $('btn-kw').addEventListener('click', startKeyword);
+  $('btn-kw-cancel').addEventListener('click', function () {
+    sendToTab({ type: 'LL_BULK_CANCEL' }).catch(function () { });
+    hide($('btn-kw-cancel'));
+    $('btn-kw').disabled = false;
+  });
+  $('btn-kw-csv').addEventListener('click', downloadKwCsv);
 
   $('btn-scan').addEventListener('click', function () { runScan('LL_SCAN'); });
   $('btn-debug').addEventListener('click', function () {
