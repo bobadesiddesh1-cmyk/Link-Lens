@@ -288,6 +288,91 @@
     return bestScore > 0 ? best : null;
   }
 
+  function keywordStems(keyword) {
+    var kwTokens = ns.tokenizer.tokenizeText(keyword)
+      .filter(function (t) { return t.length >= 2; });
+    if (kwTokens.length === 0) return null;
+    return kwTokens.map(ns.tokenizer.stem);
+  }
+
+  /**
+   * On-page keyword mode: highlight, inline on THIS page, every spot
+   * where the keyword could become an internal link to the target.
+   */
+  function runKeywordHere(keyword, targetUrl) {
+    return getIndex(false).then(function (index) {
+      var stems = keywordStems(keyword);
+      if (!stems) throw new Error('Keyword has no usable words.');
+
+      var target = null;
+      if (targetUrl) {
+        target = { url: targetUrl, siteKey: ns.tokenizer.siteKey(targetUrl) };
+      } else {
+        var picked = pickTargetForKeyword(index, stems);
+        if (picked) target = { url: picked.url, siteKey: picked.siteKey };
+      }
+
+      ns.highlighter.clear();
+      ns.card.hide();
+
+      var res = ns.matcher.keywordScan({
+        doc: document,
+        pageUrl: location.href,
+        stems: stems,
+        targetKey: target ? target.siteKey : null,
+        maxOccurrences: 30,
+        withWords: true
+      });
+
+      if (res.alreadyLinked) {
+        return {
+          ok: true, found: 0, alreadyLinked: true,
+          targetUrl: target ? target.url : null
+        };
+      }
+
+      var suggestions = res.occurrences.map(function (o) {
+        return {
+          url: target ? target.url : '(no matching target in the site index — set a target URL)',
+          phrase: keyword,
+          matchType: o.matchType,
+          inHeading: o.inHeading,
+          position: o.position,
+          anchorText: o.anchorText,
+          contextSentence: o.contextSentence,
+          startIdx: o.startIdx,
+          endIdx: o.endIdx
+        };
+      });
+
+      lastScan = {
+        suggestions: suggestions,
+        alreadyLinked: [],
+        capped: false,
+        indexInfo: {
+          shallow: index.shallow, skippedGz: 0, capped: false,
+          source: 'keyword: "' + keyword + '"',
+          builtAt: index.builtAt, targetCount: index.targets.length
+        },
+        diagnosis: suggestions.length === 0
+          ? 'The keyword "' + keyword + '" does not appear in this page\'s copy (' +
+            res.wordCount + ' words scanned) outside existing links.'
+          : null
+      };
+
+      ns.highlighter.apply(suggestions, res.words, onHighlightClick);
+      renderPanel();
+
+      return {
+        ok: true,
+        found: suggestions.length,
+        alreadyLinked: false,
+        targetUrl: target ? target.url : null,
+        wordCount: res.wordCount
+      };
+    });
+  }
+
   function runKeyword(keyword, targetUrl, limit) {
     bulkCancelled = false;
     bulkRunning = true;
@@ -331,7 +416,7 @@
             if (res.alreadyLinked) skippedLinked++;
             else res.occurrences.forEach(function (o) {
               rows.push([url, o.anchorText, keyword, target ? target.url : '',
-                o.position, o.contextSentence]);
+                o.position, o.relevance, o.contextSentence]);
             });
             broadcast({
               type: 'LL_KEYWORD_PROGRESS', done: i + 1, total: total, url: url,
@@ -449,6 +534,14 @@
         runKeyword(msg.keyword || '', msg.targetUrl || null, msg.limit);
         sendResponse({ ok: true, started: true });
         return;
+
+      case 'LL_KEYWORD_HERE':
+        runKeywordHere(msg.keyword || '', msg.targetUrl || null).then(function (r) {
+          sendResponse(r);
+        }).catch(function (err) {
+          sendResponse({ ok: false, error: String(err && err.message || err) });
+        });
+        return true;
     }
   });
 })(self.__linkLens = self.__linkLens || {});

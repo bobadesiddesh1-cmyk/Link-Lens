@@ -86,8 +86,15 @@
     <input id="kw-keyword" type="text" class="text-input" placeholder="keyword, e.g. recurring deposit" spellcheck="false">
     <input id="kw-target" type="text" class="text-input" placeholder="target URL (optional — auto-picked from the site index)" spellcheck="false">
 
-    <button id="btn-kw" class="cta">Find pages that should link this keyword</button>
+    <button id="btn-kw-here" class="cta">🔦 Highlight this keyword on the current page</button>
+    <button id="btn-kw" class="cta secondary">Find pages site-wide that should link it</button>
     <button id="btn-kw-cancel" class="ghost hidden">Stop</button>
+
+    <div id="kw-here-result" class="result hidden">
+      <div class="result-num" id="kw-here-count">0</div>
+      <div class="result-label" id="kw-here-label">spots highlighted on this page</div>
+      <div class="result-sub" id="kw-here-sub"></div>
+    </div>
 
     <div id="kw-error" class="error hidden"></div>
     <div id="kw-progress" class="bulk-list hidden"></div>

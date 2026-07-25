@@ -496,8 +496,9 @@
       words = extractWords(opts.doc.body, opts.doc);
     }
     var stems = opts.stems;
+    var maxOcc = opts.maxOccurrences || 3;
     var occ = [];
-    for (var pos = 0; pos < words.length && occ.length < 3; pos++) {
+    for (var pos = 0; pos < words.length && occ.length < maxOcc; pos++) {
       var word = words[pos];
       if (word.inLink || word.w !== stems[0]) continue;
       var rec = null;
@@ -512,13 +513,24 @@
       if (rec.matchType !== 'exact' && rec.e - rec.s > 5) rec.e = rec.s + 5;
       occ.push({
         matchType: rec.matchType,
+        // Relevance per SEO practice: exact keyword in copy = High,
+        // all-words-nearby (semantic-ish) = Medium.
+        relevance: rec.matchType === 'exact' ? 'High' : 'Medium',
         position: positionOf(rec.s, words.length),
+        inHeading: words[rec.s].inHeading,
         anchorText: sliceAnchor(words, rec.s, rec.e),
-        contextSentence: contextSentence(words, rec.s, rec.e)
+        contextSentence: contextSentence(words, rec.s, rec.e),
+        startIdx: rec.s,
+        endIdx: rec.e
       });
       pos = rec.e; // don't re-match inside the same span
     }
-    return { alreadyLinked: false, occurrences: occ, wordCount: words.length };
+    return {
+      alreadyLinked: false,
+      occurrences: occ,
+      wordCount: words.length,
+      words: opts.withWords ? words : undefined
+    };
   }
 
   ns.matcher = {

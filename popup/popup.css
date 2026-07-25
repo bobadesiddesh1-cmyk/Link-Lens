@@ -116,6 +116,11 @@ body {
 .cta:hover { filter: brightness(1.06); }
 .cta:disabled { opacity: .55; cursor: default; filter: none; }
 .cta.small { padding: 9px; font-size: 12px; margin-top: 10px; }
+.cta.secondary {
+  margin-top: 8px;
+  background: linear-gradient(135deg, var(--teal-600), var(--cyan-500));
+  box-shadow: 0 3px 10px rgba(13, 148, 136, 0.35);
+}
 
 .row-buttons { display: flex; gap: 8px; margin-top: 8px; }
 .ghost {
