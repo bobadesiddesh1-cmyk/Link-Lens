@@ -71,6 +71,15 @@ function fail(el, message) {
   show(el);
 }
 
+/** Map Chrome's activeTab denial to an actionable instruction. */
+function friendlyError(err) {
+  var m = String(err && err.message || err);
+  if (/cannot access|cannot be scripted|activeTab|not been invoked|missing host permission/i.test(m)) {
+    return 'Chrome needs a fresh grant for this tab: click the Link Lens toolbar icon once, then try again.';
+  }
+  return 'Could not run on this page: ' + m;
+}
+
 function timeAgo(ts) {
   var mins = Math.round((Date.now() - ts) / 60000);
   if (mins < 1) return 'just now';
@@ -150,7 +159,7 @@ function runScan(msgType) {
   }).catch(function (err) {
     setScanBusy(false);
     hide(prog);
-    fail($('scan-error'), 'Could not run on this page: ' + err.message);
+    fail($('scan-error'), friendlyError(err));
   });
 }
 
@@ -244,7 +253,7 @@ function startBulk() {
   }).catch(function (err) {
     $('btn-bulk').disabled = false;
     hide($('btn-bulk-cancel'));
-    fail($('bulk-error'), 'Could not start on this page: ' + err.message);
+    fail($('bulk-error'), friendlyError(err));
   });
 }
 
@@ -310,7 +319,7 @@ function startKeyword() {
   }).catch(function (err) {
     $('btn-kw').disabled = false;
     hide($('btn-kw-cancel'));
-    fail($('kw-error'), 'Could not start on this page: ' + err.message);
+    fail($('kw-error'), friendlyError(err));
   });
 }
 
@@ -395,7 +404,7 @@ function keywordHere() {
     show($('kw-here-result'));
   }).catch(function (err) {
     $('btn-kw-here').disabled = false;
-    fail($('kw-error'), 'Could not run on this page: ' + err.message);
+    fail($('kw-error'), friendlyError(err));
   });
 }
 
@@ -452,25 +461,50 @@ function switchTab(name) {
   });
 }
 
-document.addEventListener('DOMContentLoaded', function () {
+/**
+ * (Re)bind the panel to the current active tab. The side panel outlives
+ * tab switches and navigations, so this runs on load AND whenever the
+ * active tab changes.
+ */
+function initPanel() {
   chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
     tab = tabs && tabs[0];
     var usable = tab && tab.url && /^https?:/.test(tab.url);
+    var buttons = ['btn-scan', 'btn-rebuild', 'btn-bulk', 'btn-kw', 'btn-kw-here'];
     if (!usable) {
       $('cache-dot').className = 'dot';
-      $('cache-text').textContent = 'Link Lens only works on http(s) pages.';
-      $('btn-scan').disabled = true;
-      $('btn-rebuild').disabled = true;
-      $('btn-bulk').disabled = true;
-      $('btn-kw').disabled = true;
-      $('btn-kw-here').disabled = true;
+      $('cache-text').textContent = 'Link Lens works on http(s) pages.';
+      $('cache-sub').textContent = tab && !tab.url
+        ? 'Click the Link Lens toolbar icon once on this tab to activate it.'
+        : 'Open a page of your site, then click the Link Lens toolbar icon.';
+      buttons.forEach(function (id) { $(id).disabled = true; });
       return;
     }
-    origin = new URL(tab.url).origin;
+    var newOrigin = new URL(tab.url).origin;
+    if (newOrigin !== origin) {
+      // switched sites: stale results would be misleading
+      hide($('scan-result'));
+      hide($('bulk-done'));
+      hide($('kw-done'));
+      hide($('kw-here-result'));
+    }
+    origin = newOrigin;
+    buttons.forEach(function (id) { $(id).disabled = false; });
     $('bulk-domain').textContent = new URL(origin).hostname;
     refreshCacheStatus();
     restoreBulkState();
   });
+}
+
+document.addEventListener('DOMContentLoaded', function () {
+  initPanel();
+  // Follow the user across tabs and navigations (side panel persists).
+  if (chrome.tabs.onActivated) {
+    chrome.tabs.onActivated.addListener(function () { initPanel(); });
+    chrome.tabs.onUpdated.addListener(function (tabId, info) {
+      if (info.status === 'complete') initPanel();
+    });
+  }
 
   $('tab-scan').addEventListener('click', function () { switchTab('scan'); });
   $('tab-bulk').addEventListener('click', function () { switchTab('bulk'); });

@@ -15,7 +15,10 @@ Built with Manifest V3, vanilla JS, no frameworks, no build step.
 2. Open `chrome://extensions` in Chrome (or any Chromium browser).
 3. Toggle **Developer mode** (top right).
 4. Click **Load unpacked** and select this folder (the one containing `manifest.json`).
-5. Pin **Link Lens** to the toolbar. Open any page of your site and click the icon.
+5. Pin **Link Lens** to the toolbar. Open any page of your site and click the icon —
+   Link Lens opens in **Chrome's side panel**, staying open while you browse. It
+   follows you across tabs; if Chrome asks for a fresh grant after a tab switch,
+   just click the toolbar icon once on that tab.
 
 No account, no configuration, no remote services.
 

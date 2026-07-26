@@ -17,6 +17,12 @@
  */
 'use strict';
 
+// Clicking the toolbar icon opens the Link Lens side panel (and grants
+// activeTab for that tab, which the panel's scan buttons rely on).
+try {
+  chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
+} catch (e) { /* sidePanel API missing on very old Chrome — icon does nothing */ }
+
 function bulkKey(origin) { return 'll_bulk:' + origin; }
 
 function originFromSender(sender) {
