@@ -54,15 +54,38 @@ function sendToBackground(msg) {
   });
 }
 
+/**
+ * Make sure we can script the current site. activeTab (icon click) covers
+ * the first run; otherwise ask Chrome ONCE for this site via optional
+ * host permissions — after the user approves, scans work on this site
+ * permanently, across tab switches and reloads.
+ */
+function ensureSiteAccess() {
+  return new Promise(function (resolve, reject) {
+    var req = { origins: [origin + '/*'] };
+    chrome.permissions.contains(req, function (has) {
+      if (has) return resolve(true);
+      chrome.permissions.request(req, function (granted) {
+        void chrome.runtime.lastError;
+        resolve(!!granted); // not granted → fall back to activeTab attempt
+      });
+    });
+  });
+}
+
+function injectBundle() {
+  return chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    files: CONTENT_FILES
+  }).then(function () {
+    return sendToTab({ type: 'LL_PING' });
+  });
+}
+
 /** Inject the content bundle once; a live LL_PING short-circuits. */
 function ensureInjected() {
   return sendToTab({ type: 'LL_PING' }).catch(function () {
-    return chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      files: CONTENT_FILES
-    }).then(function () {
-      return sendToTab({ type: 'LL_PING' });
-    });
+    return ensureSiteAccess().then(injectBundle);
   });
 }
 
@@ -75,7 +98,7 @@ function fail(el, message) {
 function friendlyError(err) {
   var m = String(err && err.message || err);
   if (/cannot access|cannot be scripted|activeTab|not been invoked|missing host permission/i.test(m)) {
-    return 'Chrome needs a fresh grant for this tab: click the Link Lens toolbar icon once, then try again.';
+    return 'Chrome blocked access to this page. Click the button again and choose "Allow" when Chrome asks for permission on this site (one-time per site).';
   }
   return 'Could not run on this page: ' + m;
 }
