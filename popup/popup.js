@@ -466,12 +466,21 @@ function switchTab(name) {
  * tab switches and navigations, so this runs on load AND whenever the
  * active tab changes.
  */
+var initRetried = false;
+
 function initPanel() {
   chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
     tab = tabs && tabs[0];
     var usable = tab && tab.url && /^https?:/.test(tab.url);
     var buttons = ['btn-scan', 'btn-rebuild', 'btn-bulk', 'btn-kw', 'btn-kw-here'];
     if (!usable) {
+      // The URL can lag the panel's first paint by a beat — retry once
+      // before declaring the tab unusable.
+      if (tab && !tab.url && !initRetried) {
+        initRetried = true;
+        setTimeout(initPanel, 500);
+        return;
+      }
       $('cache-dot').className = 'dot';
       $('cache-text').textContent = 'Link Lens works on http(s) pages.';
       $('cache-sub').textContent = tab && !tab.url
@@ -480,6 +489,7 @@ function initPanel() {
       buttons.forEach(function (id) { $(id).disabled = true; });
       return;
     }
+    initRetried = false;
     var newOrigin = new URL(tab.url).origin;
     if (newOrigin !== origin) {
       // switched sites: stale results would be misleading
