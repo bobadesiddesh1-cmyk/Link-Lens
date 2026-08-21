@@ -1,29 +1,24 @@
 /**
  * Link Lens — background.js (MV3 service worker)
  *
- * The heavy lifting (sitemap fetch, matching, bulk fetches) happens in the
- * content-script context of the active tab so every request is same-origin
- * (no host permissions needed). The service worker's job is durability:
- * it listens to bulk-mode progress coming from tabs and persists the run
- * state per origin, so the popup can be closed and reopened mid-batch
- * without losing progress or the finished CSV rows.
+ * Two jobs:
+ *  1. Open the side panel when the toolbar icon is clicked.
+ *  2. Own the site crawl: the heavy work runs in an offscreen document
+ *     (service workers have no DOMParser), and this worker starts it,
+ *     relays commands, persists nothing itself, and keeps a watchdog
+ *     alarm so an interrupted crawl resumes automatically.
  *
- * Messages handled (from content scripts):
- *   LL_BULK_PROGRESS {done, total, url, ok, error?, found?}
- *   LL_BULK_DONE     {rows, failures, total, cancelled}
- * Messages handled (from the popup):
- *   LL_GET_BULK  {origin}  → last persisted bulk state for that origin
- *   LL_CLEAR_BULK {origin} → forget a finished run
+ * Bulk/keyword runs still stream from the tab's content script; their
+ * progress is buffered here so the side panel can close and reopen.
  */
 'use strict';
 
-// Clicking the toolbar icon opens the Link Lens side panel (and grants
-// activeTab for that tab, which the panel's scan buttons rely on).
 try {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
-} catch (e) { /* sidePanel API missing on very old Chrome — icon does nothing */ }
+} catch (e) { /* very old Chrome: icon click does nothing */ }
 
 function bulkKey(origin) { return 'll_bulk:' + origin; }
+function crawlKey(origin) { return 'll_crawl:' + origin; }
 
 function originFromSender(sender) {
   try {
@@ -46,8 +41,75 @@ function setState(origin, state) {
   return chrome.storage.local.set(obj);
 }
 
+/* ------------------------------------------------------------------ *
+ * Offscreen crawler lifecycle
+ * ------------------------------------------------------------------ */
+
+var creatingOffscreen = null;
+
+function ensureOffscreen() {
+  return chrome.offscreen.hasDocument().then(function (has) {
+    if (has) return true;
+    if (!creatingOffscreen) {
+      creatingOffscreen = chrome.offscreen.createDocument({
+        url: 'crawler/offscreen.html',
+        reasons: ['DOM_PARSER'],
+        justification: 'Parse fetched pages of the user\'s own site to build the internal-link index.'
+      }).catch(function (e) {
+        // A concurrent create can race; treat "already exists" as success.
+        if (!/already/i.test(String(e && e.message))) throw e;
+      }).then(function () {
+        creatingOffscreen = null;
+        return true;
+      });
+    }
+    return creatingOffscreen;
+  });
+}
+
+function toOffscreen(msg) {
+  return ensureOffscreen().then(function () {
+    return new Promise(function (resolve) {
+      msg.target = 'll-offscreen';
+      chrome.runtime.sendMessage(msg, function (res) {
+        void chrome.runtime.lastError;
+        resolve(res || { ok: false, error: 'crawler did not respond' });
+      });
+    });
+  });
+}
+
+/** Resume a crawl that was interrupted (worker restart, browser restart). */
+function resumeIfNeeded() {
+  return chrome.storage.local.get(null).then(function (all) {
+    var keys = Object.keys(all).filter(function (k) { return k.indexOf('ll_crawl:') === 0; });
+    var pending = keys.map(function (k) { return all[k]; }).filter(function (c) {
+      return c && c.status === 'running' && c.queue && c.queue.length > 0;
+    });
+    if (pending.length === 0) return;
+    return toOffscreen({ type: 'LL_CRAWL_PING' }).then(function (res) {
+      if (res && res.running) return; // already going
+      var c = pending[0];
+      return toOffscreen({
+        type: 'LL_CRAWL_START', origin: c.origin, delayMs: c.delayMs
+      });
+    });
+  });
+}
+
+chrome.alarms.create('ll-crawl-watchdog', { periodInMinutes: 1 });
+chrome.alarms.onAlarm.addListener(function (alarm) {
+  if (alarm.name === 'll-crawl-watchdog') resumeIfNeeded();
+});
+chrome.runtime.onStartup.addListener(resumeIfNeeded);
+
+/* ------------------------------------------------------------------ *
+ * Messages
+ * ------------------------------------------------------------------ */
+
 chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
   if (!msg || typeof msg.type !== 'string') return;
+  if (msg.target === 'll-offscreen') return; // not ours
 
   switch (msg.type) {
     case 'LL_BULK_PROGRESS': {
@@ -65,7 +127,7 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
         });
         return setState(origin, state);
       });
-      return; // fire-and-forget
+      return;
     }
 
     case 'LL_BULK_DONE': {
@@ -87,10 +149,47 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
       getState(msg.origin).then(function (state) {
         sendResponse({ ok: true, state: state });
       });
-      return true; // async response
+      return true;
 
     case 'LL_CLEAR_BULK':
       chrome.storage.local.remove(bulkKey(msg.origin)).then(function () {
+        sendResponse({ ok: true });
+      });
+      return true;
+
+    /* ---- crawl control (from the side panel) ---- */
+
+    case 'LL_CRAWL_START':
+      toOffscreen({
+        type: 'LL_CRAWL_START',
+        origin: msg.origin,
+        urls: msg.urls,
+        limit: msg.limit,
+        delayMs: msg.delayMs,
+        fresh: msg.fresh
+      }).then(sendResponse);
+      return true;
+
+    case 'LL_CRAWL_STOP':
+      toOffscreen({ type: 'LL_CRAWL_STOP' }).then(sendResponse);
+      return true;
+
+    case 'LL_CRAWL_STATUS':
+      chrome.storage.local.get(crawlKey(msg.origin)).then(function (obj) {
+        var c = obj[crawlKey(msg.origin)] || null;
+        sendResponse({
+          ok: true,
+          crawl: c ? {
+            status: c.status, done: c.done, failed: c.failed, total: c.total,
+            pages: Object.keys(c.pages || {}).length, updatedAt: c.updatedAt,
+            remaining: (c.queue || []).length, errors: (c.errors || []).slice(0, 10)
+          } : null
+        });
+      });
+      return true;
+
+    case 'LL_CRAWL_CLEAR':
+      chrome.storage.local.remove(crawlKey(msg.origin)).then(function () {
         sendResponse({ ok: true });
       });
       return true;

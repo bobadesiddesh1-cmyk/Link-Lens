@@ -2,14 +2,16 @@
   "manifest_version": 3,
   "name": "Link Lens — Internal Linking Opportunity Finder",
   "short_name": "Link Lens",
-  "version": "1.5.2",
+  "version": "2.0.0",
   "description": "Highlights the sentences that should link to other pages of your site, with anchor text and target URL. Any CMS. 100% local.",
   "permissions": [
     "storage",
     "activeTab",
     "scripting",
     "sidePanel",
-    "tabs"
+    "tabs",
+    "offscreen",
+    "alarms"
   ],
   "optional_host_permissions": [
     "http://*/*",

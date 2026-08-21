@@ -72,6 +72,12 @@
     '}',
     '.item:hover { background: #F0FDFA; border-color: #99F6E4; }',
     '.item .anchor { font-weight: 600; }',
+    '.score { display: inline-block; min-width: 26px; text-align: center; font-size: 10px;',
+    '  font-weight: 800; padding: 2px 5px; border-radius: 6px; margin-right: 6px; }',
+    '.score.hi { background: #0D9488; color: #fff; }',
+    '.score.mid { background: #CCFBF1; color: #0F766E; }',
+    '.score.lo { background: #F1F5F9; color: #64748B; }',
+    '.why { font-size: 10px; color: #64748B; margin-top: 3px; font-style: italic; }',
     '.item .url { font-size: 11px; color: #0369A1; word-break: break-all; margin-top: 2px; }',
     '.tag { display: inline-block; font-size: 9px; font-weight: 800; text-transform: uppercase;',
     '  letter-spacing: .05em; padding: 1px 7px; border-radius: 999px; margin-left: 6px; vertical-align: 1px; }',
@@ -164,11 +170,17 @@
       data.suggestions.forEach(function (s, id) {
         sHtml +=
           '<div class="item" data-id="' + id + '">' +
+          (s.score != null
+            ? '<span class="score ' + (s.score >= 70 ? 'hi' : (s.score >= 45 ? 'mid' : 'lo')) +
+              '" title="opportunity score">' + s.score + '</span>'
+            : '') +
           '  <span class="anchor">' + escapeHtml(s.anchorText) + '</span>' +
           '  <span class="tag ' + s.matchType + '">' + s.matchType + '</span>' +
           (s.inHeading ? '<span class="tag heading">heading</span>' : '') +
           (s.position === 'early' ? '<span class="tag early">early</span>' : '') +
           '  <div class="url">→ ' + escapeHtml(s.url) + '</div>' +
+          ((s.reasons && s.reasons.length)
+            ? '<div class="why">' + escapeHtml(s.reasons.join(' · ')) + '</div>' : '') +
           '</div>';
       });
     }

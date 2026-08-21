@@ -55,6 +55,27 @@ Everything else follows the brief verbatim.
 - **Sitemap fetch timeout:** 10 s per request via `AbortController`, so a hanging
   sitemap can't wedge a scan.
 
+## Intelligence layer (2.0.0)
+
+- **Crawler runs in an offscreen document**, not the service worker (no DOMParser
+  there) and not a content script (dies on navigation). A 1-minute watchdog alarm
+  resumes an interrupted crawl; state persists every 8 pages so nothing is lost.
+- **The site root is always crawled**, even when absent from the sitemap — hub
+  pages carry the most editorial links and would otherwise be missing from the graph.
+- **Only editorial links count** toward inbound/orphan/anchor stats: links inside
+  `nav`, `footer`, `aside`, `header` or `role=navigation|banner|contentinfo` are
+  boilerplate and would make every page look well-linked.
+- **Targets with unusable slugs are kept** in the index (previously dropped) so a
+  later crawl can give them title/topic match phrases.
+- **Document-frequency table prunes singleton terms** past 40k entries — they carry
+  no comparative signal (idf treats unknown terms as rare anyway) and would
+  otherwise dominate storage on large sites.
+- **Score weights** (match 40 / relevance 25 / link need 20 / placement 10 /
+  phrase source 5, minus a 10-point anchor over-use penalty) are heuristics tuned
+  so an orphan page with strong topical overlap outranks a well-linked page with a
+  coincidental keyword hit.
+- Crawl fetches use `credentials: 'include'` so staging and auth-gated sites work.
+
 ## Matching engine v2 (1.1.0)
 
 v1 matched exact word forms only, required every slug token, keyed the inverted

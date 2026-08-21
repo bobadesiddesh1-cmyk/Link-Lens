@@ -60,6 +60,11 @@
     return remove(indexKey(origin));
   }
 
+  /** The site crawl record (built by the offscreen crawler). */
+  function getCrawl(origin) {
+    return get('ll_crawl:' + origin).then(function (v) { return v || null; });
+  }
+
   /** Bulk-run state so the popup can close/reopen mid-batch. */
   function getBulkState(origin) {
     return get(bulkKey(origin)).then(function (v) { return v || null; });
@@ -75,6 +80,7 @@
     getIndex: getIndex,
     setIndex: setIndex,
     clearIndex: clearIndex,
+    getCrawl: getCrawl,
     getBulkState: getBulkState,
     setBulkState: setBulkState
   };

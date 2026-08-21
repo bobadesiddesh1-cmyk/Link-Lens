@@ -96,7 +96,34 @@ sweep over the words — well under 400 ms.
   `source_url, anchor_text, target_url, match_type, position, context_sentence`
   — your client-deliverable (`position` = early / body / deep in the copy).
 
-### 4. Keyword mode
+### 4. Site intelligence (crawl)
+
+Popup → **Site intel** tab: crawl every URL in the sitemap (100 / 500 / all, at
+1–4 pages per second) to build a local model of the site. The crawl runs in an
+**offscreen document**, so it survives tab switches, navigation and even a
+service-worker restart (a watchdog alarm resumes it), and it can be paused and
+resumed. Per page it stores a compact profile — title, H1, meta description, word
+count and top TF-IDF terms — plus the **editorial** internal link graph (nav and
+footer boilerplate links are deliberately excluded) and anchor-text usage.
+
+That model upgrades everything downstream:
+
+- **Content-derived match phrases** — a target whose slug is useless
+  (`/p/1234/`) is matched by its title and distinctive topic phrases instead.
+- **Opportunity score (0–100)** on every suggestion = match quality + topical
+  relevance (TF-IDF cosine between the two pages) + how badly the target needs
+  links + placement − anchor over-use penalty. Suggestions are ranked by it and
+  each one explains itself ("orphan page — no internal links", "strong topical
+  overlap", "anchor X already used on 80% of links here — vary it").
+- **Orphan pages** — sitemap pages with zero editorial inbound links.
+- **Link equity report** — every page ranked by inbound internal links.
+- **Anchor diversity audit** — targets whose inbound anchors are over-optimized.
+
+Two extra CSVs ship from this tab: link equity (with an ORPHAN flag) and anchor
+diversity. The whole model lives in `chrome.storage.local` — a 2,000-page crawl
+is roughly 2–4 MB — and nothing leaves the browser.
+
+### 5. Keyword mode
 
 Popup → **Keyword** tab: enter a target keyword (and optionally the URL it should
 link to — otherwise the best-matching page is auto-picked from the site index).
@@ -105,7 +132,7 @@ and lists every page that **mentions the keyword but doesn't link the target yet
 — with suggested anchor, placement position, and context, exported as CSV. This is
 the "where should I add links to my money page?" workflow.
 
-### 5. Bulk mode
+### 6. Bulk mode
 
 Popup → **Bulk audit** tab: paste up to **20 URLs of the same domain**. Each page is
 fetched same-origin **from the content script of the active tab**, parsed off-DOM

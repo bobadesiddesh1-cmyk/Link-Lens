@@ -48,14 +48,16 @@
       if (!tok.sameSite(loc, origin)) continue;
       var slug = tok.lastPathSegment(loc);
       var derived = tok.slugToPhrase(slug);
-      if (!derived) continue;
+      // A slug that yields no phrase (/p/1234/, /?id=9) is kept anyway:
+      // once the site is crawled its title and topic terms give it match
+      // phrases. Until then it simply never matches.
       seen.add(key);
       targets.push({
         url: loc,
         siteKey: key,
-        phrase: derived.phrase,
-        tokens: derived.tokens,
-        stems: derived.stems,
+        phrase: derived ? derived.phrase : '',
+        tokens: derived ? derived.tokens : [],
+        stems: derived ? derived.stems : [],
         depth: tok.urlDepth(loc)
       });
     }

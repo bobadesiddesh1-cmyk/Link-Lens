@@ -19,6 +19,7 @@
     <button id="tab-scan" class="tab active" role="tab" aria-selected="true">Scan page</button>
     <button id="tab-bulk" class="tab" role="tab" aria-selected="false">Bulk audit</button>
     <button id="tab-kw" class="tab" role="tab" aria-selected="false">Keyword</button>
+    <button id="tab-intel" class="tab" role="tab" aria-selected="false">Site intel</button>
   </nav>
 
   <!-- ============ SCAN TAB ============ -->
@@ -107,9 +108,59 @@
     </div>
   </section>
 
+  <!-- ============ SITE INTEL TAB ============ -->
+  <section id="view-intel" class="view">
+    <p class="hint">Crawl every URL in the sitemap to build a <strong>site intelligence
+      model</strong>: real page content, the internal link graph, and anchor text usage.
+      Scans then rank opportunities by a 0–100 score instead of guessing from URLs.
+      The crawl runs in the background — you can close this panel or browse elsewhere.</p>
+
+    <div id="intel-status" class="status-card">
+      <div class="status-row"><span class="dot" id="crawl-dot"></span>
+        <span id="crawl-text">No crawl yet for this site</span></div>
+      <div class="status-sub" id="crawl-sub">A crawl unlocks scoring, orphan pages and anchor audits.</div>
+    </div>
+
+    <div class="field-row">
+      <label for="crawl-limit">Pages</label>
+      <select id="crawl-limit">
+        <option value="100">First 100 (quick, ~2 min)</option>
+        <option value="500" selected>First 500 (~9 min)</option>
+        <option value="2000">All (up to 2,000)</option>
+      </select>
+    </div>
+    <div class="field-row">
+      <label for="crawl-speed">Speed</label>
+      <select id="crawl-speed">
+        <option value="1000" selected>Polite — 1 page/sec</option>
+        <option value="500">Faster — 2 pages/sec</option>
+        <option value="250">Fastest — 4 pages/sec</option>
+      </select>
+    </div>
+
+    <button id="btn-crawl" class="cta">🕷 Start site crawl</button>
+    <button id="btn-crawl-stop" class="ghost hidden">Pause crawl</button>
+
+    <div id="crawl-error" class="error hidden"></div>
+    <div id="crawl-progress" class="progress hidden"></div>
+
+    <div id="intel-reports" class="hidden">
+      <div class="report-head">
+        <span id="orphan-count">0</span> orphan pages ·
+        <span id="risk-count">0</span> anchor risks
+      </div>
+      <div id="intel-list" class="bulk-list"></div>
+      <button id="btn-orphan-csv" class="cta small">⬇ Orphan + link-equity CSV</button>
+      <button id="btn-anchor-csv" class="ghost">⬇ Anchor diversity CSV</button>
+      <button id="btn-crawl-clear" class="ghost">Delete crawl data</button>
+    </div>
+  </section>
+
   <footer class="foot">100% local · only your site's sitemap is fetched · no analytics</footer>
 
   <script src="../shared/tokenizer.js"></script>
+  <script src="../shared/textstats.js"></script>
+  <script src="../shared/intel.js"></script>
   <script src="../shared/csv.js"></script>
   <script src="popup.js"></script>
 </body>

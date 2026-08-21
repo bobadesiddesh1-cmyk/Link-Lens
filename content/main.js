@@ -96,10 +96,18 @@
   function exportCsv() {
     if (!lastScan) return;
     var rows = lastScan.suggestions.map(function (s) {
-      return [location.href, s.anchorText, s.url, s.matchType, s.position || 'body', s.contextSentence];
+      return [
+        location.href, s.anchorText, s.url, s.title || '',
+        s.score == null ? '' : s.score,
+        s.matchType, s.position || 'body',
+        s.inbound == null ? '' : s.inbound,
+        (s.reasons || []).join('; '),
+        s.contextSentence
+      ];
     });
     var csv = ns.csv.build(
-      ['source_url', 'anchor_text', 'target_url', 'match_type', 'position', 'context_sentence'],
+      ['source_url', 'anchor_text', 'target_url', 'target_title', 'score',
+        'match_type', 'position', 'target_inbound_links', 'why', 'context_sentence'],
       rows
     );
     ns.csv.download('link-lens-' + location.hostname + '.csv', csv, document);
@@ -112,18 +120,42 @@
     lastScan = null;
   }
 
+  /**
+   * Load the crawl model (if the site has been crawled) and enrich the
+   * index targets with it: content phrases, topical vectors, inbound
+   * link counts. Returns null when no crawl exists — everything still
+   * works, just on slug phrases alone.
+   */
+  function getModel(index) {
+    return ns.storage.getCrawl(ORIGIN).then(function (crawl) {
+      var model = ns.intel.buildModel(crawl);
+      ns.intel.enrich(index.targets, model);
+      return model;
+    }).catch(function () {
+      ns.intel.enrich(index.targets, null);
+      return null;
+    });
+  }
+
   function scan(force) {
     // Restore the DOM before matching so a re-scan sees the original text,
     // not our own highlight spans.
     ns.highlighter.clear();
     ns.card.hide();
     return getIndex(force).then(function (index) {
-      progress('match', 'Scanning page copy against ' + index.targets.length + ' targets…');
+      return getModel(index).then(function (model) {
+        return { index: index, model: model };
+      });
+    }).then(function (ctx) {
+      var index = ctx.index, model = ctx.model;
+      progress('match', 'Scanning page copy against ' + index.targets.length + ' targets' +
+        (model ? ' (with site intelligence from ' + model.totalDocs + ' crawled pages)' : '') + '…');
       var t0 = performance.now();
       var result = ns.matcher.match({
         doc: document,
         pageUrl: location.href,
-        targets: index.targets
+        targets: index.targets,
+        model: model
       });
       var elapsed = Math.round(performance.now() - t0);
 
@@ -137,7 +169,8 @@
           capped: index.capped,
           source: index.source,
           builtAt: index.builtAt,
-          targetCount: index.targets.length
+          targetCount: index.targets.length,
+          crawledPages: model ? model.totalDocs : 0
         }
       };
 
@@ -168,6 +201,7 @@
         shallow: index.shallow,
         targetCount: index.targets.length,
         source: index.source,
+        crawledPages: model ? model.totalDocs : 0,
         diagnosis: diagnosis
       };
       lastScan.diagnosis = diagnosis;
@@ -534,6 +568,42 @@
         runKeyword(msg.keyword || '', msg.targetUrl || null, msg.limit);
         sendResponse({ ok: true, started: true });
         return;
+
+      case 'LL_INTEL_REPORT':
+        // Build the site-wide audit reports from the crawl model.
+        getIndex(false).then(function (index) {
+          return getModel(index).then(function (model) {
+            if (!model) {
+              sendResponse({ ok: false, error: 'No crawl data yet — run the site crawl first.' });
+              return;
+            }
+            var targets = index.targets;
+            sendResponse({
+              ok: true,
+              coverage: model.coverage,
+              orphans: ns.intel.orphanPages(model, targets),
+              underLinked: ns.intel.underLinked(model, targets, 200),
+              anchorRisks: ns.intel.anchorRisks(model, targets, 100)
+            });
+          });
+        }).catch(function (err) {
+          sendResponse({ ok: false, error: String(err && err.message || err) });
+        });
+        return true;
+
+      case 'LL_INDEX_URLS':
+        // The panel needs the sitemap URL list to feed the crawler.
+        getIndex(!!msg.force).then(function (index) {
+          sendResponse({
+            ok: true,
+            urls: index.targets.map(function (t) { return t.url; }),
+            shallow: index.shallow,
+            source: index.source
+          });
+        }).catch(function (err) {
+          sendResponse({ ok: false, error: String(err && err.message || err) });
+        });
+        return true;
 
       case 'LL_KEYWORD_HERE':
         runKeywordHere(msg.keyword || '', msg.targetUrl || null).then(function (r) {

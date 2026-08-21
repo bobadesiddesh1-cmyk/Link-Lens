@@ -11,6 +11,8 @@ var ns = self.__linkLens; // tokenizer + csv, loaded by popup.html
 
 var CONTENT_FILES = [
   'shared/tokenizer.js',
+  'shared/textstats.js',
+  'shared/intel.js',
   'shared/storage.js',
   'shared/csv.js',
   'content/sitemap.js',
@@ -432,6 +434,130 @@ function keywordHere() {
 }
 
 /* ------------------------------------------------------------------ *
+ * Site intel tab — crawl + reports
+ * ------------------------------------------------------------------ */
+
+var intelReport = null;
+
+function renderCrawlStatus(c) {
+  var dot = $('crawl-dot');
+  if (!c) {
+    dot.className = 'dot stale';
+    $('crawl-text').textContent = 'No crawl yet for this site';
+    $('crawl-sub').textContent = 'A crawl unlocks scoring, orphan pages and anchor audits.';
+    hide($('intel-reports'));
+    hide($('crawl-progress'));
+    return;
+  }
+  var running = c.status === 'running';
+  dot.className = 'dot ' + (c.status === 'done' ? 'fresh' : 'stale');
+  $('crawl-text').textContent = running
+    ? 'Crawling… ' + c.done + ' of ' + c.total
+    : (c.status === 'done' ? 'Crawl complete — ' + c.pages + ' pages indexed'
+      : 'Crawl paused — ' + c.pages + ' pages indexed');
+  $('crawl-sub').textContent = c.failed
+    ? c.failed + ' pages failed · ' + (c.remaining || 0) + ' remaining'
+    : (c.remaining ? c.remaining + ' remaining' : 'Scans now use the intelligence model.');
+
+  $('btn-crawl').disabled = running;
+  $('btn-crawl').textContent = (!running && c.remaining > 0)
+    ? '▶ Resume crawl (' + c.remaining + ' left)' : '🕷 Start site crawl';
+  if (running) show($('btn-crawl-stop')); else hide($('btn-crawl-stop'));
+
+  var pct = c.total ? Math.round((c.done + c.failed) / c.total * 100) : 0;
+  $('crawl-progress').innerHTML = '<div>' + pct + '% · ' + c.done + ' crawled, ' +
+    c.failed + ' failed</div><div class="bar"><i style="width:' + pct + '%"></i></div>';
+  show($('crawl-progress'));
+
+  if (c.pages > 0 && !running) loadIntelReports();
+}
+
+function refreshCrawlStatus() {
+  sendToBackground({ type: 'LL_CRAWL_STATUS', origin: origin }).then(function (res) {
+    renderCrawlStatus(res && res.crawl);
+  });
+}
+
+function startCrawl() {
+  hide($('crawl-error'));
+  $('btn-crawl').disabled = true;
+  var limit = parseInt($('crawl-limit').value, 10);
+  var delayMs = parseInt($('crawl-speed').value, 10);
+
+  ensureInjected().then(function () {
+    return sendToTab({ type: 'LL_INDEX_URLS', force: false });
+  }).then(function (res) {
+    if (!res || !res.ok) throw new Error((res && res.error) || 'Could not read the site index.');
+    if (res.shallow) {
+      throw new Error('No sitemap found for this site, so there is no URL list to crawl.');
+    }
+    return sendToBackground({
+      type: 'LL_CRAWL_START', origin: origin,
+      urls: res.urls, limit: limit, delayMs: delayMs
+    });
+  }).then(function (res) {
+    if (!res || !res.ok) {
+      $('btn-crawl').disabled = false;
+      fail($('crawl-error'), (res && res.error) || 'Could not start the crawl.');
+      return;
+    }
+    refreshCrawlStatus();
+  }).catch(function (err) {
+    $('btn-crawl').disabled = false;
+    fail($('crawl-error'), friendlyError(err));
+  });
+}
+
+function loadIntelReports() {
+  ensureInjected().then(function () {
+    return sendToTab({ type: 'LL_INTEL_REPORT' });
+  }).then(function (res) {
+    if (!res || !res.ok) return;
+    intelReport = res;
+    $('orphan-count').textContent = res.orphans.length;
+    $('risk-count').textContent = res.anchorRisks.length;
+    var box = $('intel-list');
+    box.innerHTML = '';
+    res.orphans.slice(0, 40).forEach(function (o) {
+      var row = document.createElement('div');
+      row.className = 'bl-row';
+      var u = document.createElement('span');
+      u.className = 'bl-url';
+      u.textContent = o.title || o.url;
+      var m = document.createElement('span');
+      m.className = 'bl-meta';
+      m.textContent = 'orphan';
+      row.appendChild(u); row.appendChild(m);
+      box.appendChild(row);
+    });
+    if (res.orphans.length === 0) {
+      box.innerHTML = '<div class="bl-row"><span class="bl-url">' +
+        'No orphan pages — every crawled page has at least one internal link. ✓</span></div>';
+    }
+    show($('intel-reports'));
+  }).catch(function () { /* crawl not ready */ });
+}
+
+function downloadOrphanCsv() {
+  if (!intelReport) return;
+  var rows = intelReport.underLinked.map(function (r) {
+    return [r.url, r.title, r.inbound, r.words, r.inbound === 0 ? 'ORPHAN' : ''];
+  });
+  ns.csv.download('link-lens-link-equity-' + new URL(origin).hostname + '.csv',
+    ns.csv.build(['url', 'title', 'inbound_internal_links', 'word_count', 'flag'], rows), document);
+}
+
+function downloadAnchorCsv() {
+  if (!intelReport) return;
+  var rows = intelReport.anchorRisks.map(function (r) {
+    return [r.url, r.anchor, r.uses, r.total, r.share + '%', r.variants];
+  });
+  ns.csv.download('link-lens-anchors-' + new URL(origin).hostname + '.csv',
+    ns.csv.build(['target_url', 'dominant_anchor', 'uses', 'total_links',
+      'share_of_anchors', 'anchor_variants'], rows), document);
+}
+
+/* ------------------------------------------------------------------ *
  * Live messages from the tab (progress streaming)
  * ------------------------------------------------------------------ */
 
@@ -469,6 +595,14 @@ chrome.runtime.onMessage.addListener(function (msg) {
   if (msg.type === 'LL_KEYWORD_DONE') {
     showKwDone(msg);
   }
+
+  if (msg.type === 'LL_CRAWL_PROGRESS' && msg.origin === origin) {
+    renderCrawlStatus({
+      status: msg.status, done: msg.done, failed: msg.failed,
+      total: msg.total, pages: msg.pages,
+      remaining: Math.max(0, (msg.total || 0) - (msg.done || 0) - (msg.failed || 0))
+    });
+  }
 });
 
 /* ------------------------------------------------------------------ *
@@ -476,7 +610,8 @@ chrome.runtime.onMessage.addListener(function (msg) {
  * ------------------------------------------------------------------ */
 
 function switchTab(name) {
-  ['scan', 'bulk', 'kw'].forEach(function (t) {
+  if (name === 'intel') refreshCrawlStatus();
+  ['scan', 'bulk', 'kw', 'intel'].forEach(function (t) {
     var on = t === name;
     $('tab-' + t).classList.toggle('active', on);
     $('tab-' + t).setAttribute('aria-selected', String(on));
@@ -495,7 +630,7 @@ function initPanel() {
   chrome.tabs.query({ active: true, currentWindow: true }, function (tabs) {
     tab = tabs && tabs[0];
     var usable = tab && tab.url && /^https?:/.test(tab.url);
-    var buttons = ['btn-scan', 'btn-rebuild', 'btn-bulk', 'btn-kw', 'btn-kw-here'];
+    var buttons = ['btn-scan', 'btn-rebuild', 'btn-bulk', 'btn-kw', 'btn-kw-here', 'btn-crawl'];
     if (!usable) {
       // The URL can lag the panel's first paint by a beat — retry once
       // before declaring the tab unusable.
@@ -550,6 +685,20 @@ document.addEventListener('DOMContentLoaded', function () {
     $('btn-kw').disabled = false;
   });
   $('btn-kw-csv').addEventListener('click', downloadKwCsv);
+  $('tab-intel').addEventListener('click', function () { switchTab('intel'); });
+  $('btn-crawl').addEventListener('click', startCrawl);
+  $('btn-crawl-stop').addEventListener('click', function () {
+    sendToBackground({ type: 'LL_CRAWL_STOP' }).then(refreshCrawlStatus);
+  });
+  $('btn-orphan-csv').addEventListener('click', downloadOrphanCsv);
+  $('btn-anchor-csv').addEventListener('click', downloadAnchorCsv);
+  $('btn-crawl-clear').addEventListener('click', function () {
+    sendToBackground({ type: 'LL_CRAWL_CLEAR', origin: origin }).then(function () {
+      intelReport = null;
+      hide($('intel-reports'));
+      refreshCrawlStatus();
+    });
+  });
 
   $('btn-scan').addEventListener('click', function () { runScan('LL_SCAN'); });
   $('btn-debug').addEventListener('click', function () {

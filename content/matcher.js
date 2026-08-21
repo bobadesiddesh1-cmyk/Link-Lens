@@ -197,19 +197,34 @@
    * Matching
    * ------------------------------------------------------------------ */
 
-  /** Inverted index: every stem of every target → [targets]. */
+  /**
+   * Inverted index over EVERY phrase of every target (slug phrase, plus
+   * title/H1 and distinctive topic phrases once the site has been
+   * crawled): stem → [{target, phrase}].
+   */
   function buildInvertedIndex(targets) {
     var map = new Map();
     for (var i = 0; i < targets.length; i++) {
-      var stems = targets[i].stems || targets[i].tokens.map(tok.stem);
-      targets[i].stems = stems;
-      var added = new Set();
-      for (var k = 0; k < stems.length; k++) {
-        if (added.has(stems[k])) continue;
-        added.add(stems[k]);
-        var list = map.get(stems[k]);
-        if (!list) { list = []; map.set(stems[k], list); }
-        list.push(targets[i]);
+      var t = targets[i];
+      var phrases = t.phrases;
+      if (!phrases) {
+        // No intelligence layer yet: the slug phrase is all we know.
+        t.stems = t.stems || (t.tokens || []).map(tok.stem);
+        phrases = t.phrases = (t.tokens && t.tokens.length)
+          ? [{ tokens: t.tokens, stems: t.stems, kind: 'slug', weight: 1 }]
+          : [];
+      }
+      if (phrases.length === 0) continue; // nothing to match on (yet)
+      for (var p = 0; p < phrases.length; p++) {
+        var stems = phrases[p].stems;
+        var added = new Set();
+        for (var k = 0; k < stems.length; k++) {
+          if (added.has(stems[k])) continue;
+          added.add(stems[k]);
+          var list = map.get(stems[k]);
+          if (!list) { list = []; map.set(stems[k], list); }
+          list.push({ target: t, phrase: phrases[p] });
+        }
       }
     }
     return map;
@@ -349,8 +364,9 @@
       var key = t.siteKey || tok.siteKey(t.url);
       t.siteKey = key;
       if (!key || selfIds.has(key)) continue; // never suggest linking to self
-      var g = groups.get(t.phrase);
-      if (!g) { g = { linkedUrl: null, rep: null }; groups.set(t.phrase, g); }
+      var groupKey = t.phrase || t.siteKey;
+      var g = groups.get(groupKey);
+      if (!g) { g = { linkedUrl: null, rep: null }; groups.set(groupKey, g); }
       if (pageLinks.has(key)) {
         if (!g.linkedUrl) g.linkedUrl = t.url;
         continue;
@@ -364,7 +380,7 @@
     var active = [];
     var alreadyLinked = [];
     groups.forEach(function (g, phrase) {
-      if (g.linkedUrl) alreadyLinked.push({ url: g.linkedUrl, phrase: phrase });
+      if (g.linkedUrl) alreadyLinked.push({ url: g.linkedUrl, phrase: phrase || g.linkedUrl });
       else if (g.rep) active.push(g.rep);
     });
 
@@ -387,12 +403,13 @@
       if (!candidates) continue;
 
       for (var c = 0; c < candidates.length; c++) {
-        var target = candidates[c];
+        var target = candidates[c].target;
+        var phrase = candidates[c].phrase;
         var current = bestByTarget.get(target.siteKey);
         // Nothing beats an exact body match — skip finished targets.
         if (current && current.matchType === 'exact' && !current.inHeading) continue;
 
-        var stems = target.stems;
+        var stems = phrase.stems;
         var n = stems.length;
         var rec = null;
 
@@ -417,17 +434,50 @@
         if (!rec) continue;
         rec.inHeading = words[rec.startIdx].inHeading;
         rec.target = target;
+        rec.phraseKind = phrase.kind;
+        rec.phraseWeight = phrase.weight;
         if (better(current, rec)) bestByTarget.set(target.siteKey, rec);
       }
     }
 
-    // Rank: exact > loose > partial; within a type, multi-token phrases
-    // beat single words ("eligibility criteria" > "offered"), then
-    // shallower depth, then position.
     var all = Array.from(bestByTarget.values());
+
+    // With a crawl model available, rank by the 0-100 opportunity score
+    // (match quality + topical relevance + how badly the target needs
+    // links + placement). Without one, fall back to the structural rank.
+    var model = opts.model || null;
+    var pageVec = null, medianIn = 0;
+    if (model && ns.textstats && ns.intel) {
+      var pageText = [];
+      for (var wi = 0; wi < words.length; wi++) pageText.push(words[wi].raw);
+      var counts = ns.textstats.termCounts(pageText.join(' '));
+      pageVec = ns.textstats.vector(ns.textstats.topTerms(counts, 40), model.df, model.totalDocs);
+      medianIn = ns.intel.medianInbound(model, active);
+    }
+
+    all.forEach(function (rec) {
+      if (!model || !ns.intel) { rec.score = null; rec.reasons = []; return; }
+      var scored = ns.intel.score({
+        suggestion: {
+          matchType: rec.matchType,
+          inHeading: rec.inHeading,
+          position: positionOf(rec.startIdx, words.length),
+          phraseKind: rec.phraseKind,
+          anchorText: sliceAnchor(words, rec.startIdx, Math.min(rec.endIdx, rec.startIdx + 5))
+        },
+        target: rec.target,
+        model: model,
+        pageVec: pageVec,
+        medianInbound: medianIn
+      });
+      rec.score = scored.score;
+      rec.reasons = scored.reasons;
+    });
+
     all.sort(function (a, b) {
+      if (a.score !== null && b.score !== null && a.score !== b.score) return b.score - a.score;
       if (a.matchType !== b.matchType) return TYPE_RANK[b.matchType] - TYPE_RANK[a.matchType];
-      var ta = a.target.tokens.length, tb = b.target.tokens.length;
+      var ta = (a.target.tokens || []).length, tb = (b.target.tokens || []).length;
       if (ta !== tb) return tb - ta;
       if (a.target.depth !== b.target.depth) return a.target.depth - b.target.depth;
       return a.startIdx - b.startIdx;
@@ -458,8 +508,13 @@
       return {
         url: rec.target.url,
         phrase: rec.target.phrase,
+        title: rec.target.title || null,
         depth: rec.target.depth,
         matchType: rec.matchType,
+        phraseKind: rec.phraseKind || 'slug',
+        score: rec.score,
+        reasons: rec.reasons || [],
+        inbound: rec.target.inbound,
         inHeading: rec.inHeading,
         position: positionOf(rec.startIdx, words.length),
         anchorText: sliceAnchor(words, rec.startIdx, rec.endIdx),

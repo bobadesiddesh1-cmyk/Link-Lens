@@ -221,6 +221,28 @@ body {
 }
 .text-input:focus { outline: 2px solid var(--cyan-500); outline-offset: -1px; }
 
+.field-row {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+}
+.field-row label { font-size: 11px; font-weight: 700; color: var(--ink-soft); min-width: 46px; }
+.field-row select {
+  flex: 1; font-size: 12px; color: var(--ink); background: var(--surface-2);
+  border: 1px solid var(--line); border-radius: 8px; padding: 7px;
+}
+.report-head {
+  font-size: 12px; font-weight: 700; color: var(--teal-600);
+  margin: 12px 0 6px;
+}
+.bar {
+  height: 6px; background: var(--surface-2); border: 1px solid var(--line);
+  border-radius: 999px; overflow: hidden; margin-top: 6px;
+}
+.bar > i {
+  display: block; height: 100%; background: linear-gradient(90deg, var(--teal-600), var(--cyan-500));
+  transition: width .4s ease;
+}
+.bl-row .tagline2 { font-size: 10px; color: var(--ink-soft); }
+
 .bulk-list {
   margin-top: 12px;
   max-height: 180px;
