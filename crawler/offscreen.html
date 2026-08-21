@@ -6,9 +6,13 @@
 </head>
 <body>
   <!-- Invisible worker document: has DOMParser (service workers don't) and
-       can fetch the site with the host permission the user granted. -->
+       can fetch the site with the host permission the user granted.
+       Runs both the site crawl and the site-wide link plan. -->
   <script src="../shared/tokenizer.js"></script>
   <script src="../shared/textstats.js"></script>
+  <script src="../shared/intel.js"></script>
+  <script src="../content/matcher.js"></script>
   <script src="crawler.js"></script>
+  <script src="planner.js"></script>
 </body>
 </html>

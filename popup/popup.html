@@ -148,13 +148,25 @@
       <div class="report-head">
         <span id="orphan-count">0</span> orphan pages ·
         <span id="risk-count">0</span> anchor risks ·
-        <span id="cannibal-count">0</span> cannibalization pairs
+        <span id="cannibal-count">0</span> cannibalization pairs ·
+        <span id="buried-count">0</span> buried (4+ clicks deep)
       </div>
       <div id="intel-list" class="bulk-list"></div>
       <button id="btn-orphan-csv" class="cta small">⬇ Orphan + link-equity CSV</button>
       <button id="btn-anchor-csv" class="ghost">⬇ Anchor diversity CSV</button>
       <button id="btn-cannibal-csv" class="ghost hidden">⬇ Cannibalization CSV</button>
       <button id="btn-crawl-clear" class="ghost">Delete crawl data</button>
+
+      <div class="report-head">Site-wide link plan</div>
+      <p class="hint">Re-reads each crawled page and writes a complete
+        <strong>"add this link, here, with this anchor"</strong> plan for the whole
+        site — capped at 3 links per page (and 1 per ~200 words) and 5 new links per
+        target so equity stays spread. Runs in the background, resumable.</p>
+      <button id="btn-plan" class="cta small">🗺 Build site-wide link plan</button>
+      <button id="btn-plan-stop" class="ghost hidden">Pause plan</button>
+      <div id="plan-progress" class="progress hidden"></div>
+      <button id="btn-plan-csv" class="cta small hidden">⬇ Download link plan CSV</button>
+      <div id="plan-error" class="error hidden"></div>
     </div>
   </section>
 

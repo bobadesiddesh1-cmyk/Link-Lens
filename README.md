@@ -125,7 +125,20 @@ That model upgrades everything downstream:
   identical (≥ 72% similarity), i.e. two of your pages competing for the same
   query, with each one's inbound link count so you know which to consolidate into.
 
-Two extra CSVs ship from this tab: link equity (with an ORPHAN flag) and anchor
+- **Click depth** — breadth-first distance from the homepage over editorial
+  links; pages 4+ clicks deep (or unreachable) are flagged BURIED.
+
+**Site-wide link plan.** The same tab can build the full deliverable: it re-reads
+every crawled page and writes a complete *"add this link, on this page, with this
+anchor"* plan for the entire site, as one CSV. Editorial guardrails are built in —
+at most 3 new links per page and never more than 1 per ~200 words, at most 5 new
+links pointing at any single target (so equity spreads instead of piling up), a
+minimum score floor, and targets a page already links are excluded. It runs in the
+background, is pausable and resumable, and survives a service-worker restart.
+Re-fetching is required because placing an anchor needs each page's real
+sentences, which the crawl deliberately does not store.
+
+Extra CSVs ship from this tab: link equity (with an ORPHAN flag) and anchor
 diversity. The whole model lives in `chrome.storage.local` — a 2,000-page crawl
 is roughly 2–4 MB — and nothing leaves the browser.
 

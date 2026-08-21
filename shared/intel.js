@@ -295,6 +295,53 @@
   }
 
   /**
+   * Click depth from the homepage, following EDITORIAL links only
+   * (breadth-first over the crawl's edge graph). Pages more than ~3
+   * clicks deep are the classic "buried content" problem. Returns
+   * { key: depth } with unreachable crawled pages marked Infinity, or
+   * null on a v1 crawl that has no edges.
+   */
+  function clickDepth(model) {
+    var keys = Object.keys(model.pages);
+    if (keys.length === 0) return null;
+    var hasEdges = keys.some(function (k) { return Array.isArray(model.pages[k].o); });
+    if (!hasEdges) return null;
+
+    var ids = model.ids || {};
+    var idToKey = {};
+    keys.forEach(function (k) {
+      var id = ids[k];
+      if (id !== undefined) idToKey[id] = k;
+    });
+
+    // The homepage is the shallowest key (host with no path, or "/").
+    var root = null;
+    for (var i = 0; i < keys.length; i++) {
+      var path = keys[i].slice(keys[i].indexOf('/'));
+      if (path === '/' || path === '') { root = keys[i]; break; }
+    }
+    if (!root) {
+      root = keys.slice().sort(function (a, b) { return a.length - b.length; })[0];
+    }
+
+    var depth = {};
+    keys.forEach(function (k) { depth[k] = Infinity; });
+    depth[root] = 0;
+    var queue = [root];
+    while (queue.length) {
+      var cur = queue.shift();
+      var edges = (model.pages[cur] && model.pages[cur].o) || [];
+      for (var e = 0; e < edges.length; e++) {
+        var next = idToKey[edges[e]];
+        if (next === undefined || depth[next] !== Infinity) continue;
+        depth[next] = depth[cur] + 1;
+        queue.push(next);
+      }
+    }
+    return depth;
+  }
+
+  /**
    * Keyword cannibalization: pairs of pages whose topic vectors are
    * near-identical, i.e. two pages competing for the same query.
    * Candidates are generated from shared top terms, so this stays fast
@@ -358,6 +405,7 @@
   ns.intel = {
     buildModel: buildModel,
     authority: authority,
+    clickDepth: clickDepth,
     cannibalization: cannibalization,
     enrich: enrich,
     score: score,

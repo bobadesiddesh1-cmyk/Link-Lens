@@ -80,6 +80,14 @@ Everything else follows the brief verbatim.
   on a v1 crawl rather than guessing, so old crawls degrade instead of lying.
 - **PageRank**: damping 0.85, 25 iterations, dangling mass redistributed evenly,
   normalized to mean 1.0 so the number is readable without a reference point.
+- **The site-wide plan re-fetches** rather than reusing crawl data: anchor
+  placement needs real sentences, and storing full text for 2,000 pages would blow
+  the storage budget many times over. It is therefore opt-in and rate-limited.
+- **Plan guardrails**: ≤3 links per page AND ≤1 per ~200 words (a 400-word page
+  gets 2, a tiny page gets 1), ≤5 new links per target, score floor 45. Per-target
+  counts are rebuilt from existing rows on resume so caps survive a pause.
+- **Click depth** is BFS from the homepage over editorial links only; unreachable
+  crawled pages report Infinity (rendered as BURIED) rather than a fake number.
 - **Cannibalization uses candidate generation, not O(N²)**: pages are indexed by
   their 8 most distinctive terms and only pages sharing one are compared. Terms
   held by more than 5% of the site are treated as themes, not duplicate signals.

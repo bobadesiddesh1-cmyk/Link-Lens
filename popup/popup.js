@@ -476,6 +476,7 @@ function refreshCrawlStatus() {
   sendToBackground({ type: 'LL_CRAWL_STATUS', origin: origin }).then(function (res) {
     renderCrawlStatus(res && res.crawl);
   });
+  refreshPlanStatus();
 }
 
 function startCrawl() {
@@ -517,6 +518,7 @@ function loadIntelReports() {
     $('orphan-count').textContent = res.orphans.length;
     $('risk-count').textContent = res.anchorRisks.length;
     $('cannibal-count').textContent = res.cannibals ? res.cannibals.length : 0;
+    $('buried-count').textContent = res.buried || 0;
     $('btn-cannibal-csv').classList.toggle('hidden', !(res.cannibals && res.cannibals.length));
     var box = $('intel-list');
     box.innerHTML = '';
@@ -543,12 +545,15 @@ function loadIntelReports() {
 function downloadOrphanCsv() {
   if (!intelReport) return;
   var rows = intelReport.underLinked.map(function (r) {
+    var flags = [];
+    if (r.inbound === 0) flags.push('ORPHAN');
+    if (r.clickDepth === '' || r.clickDepth > 3) flags.push('BURIED');
     return [r.url, r.title, r.inbound, r.authority == null ? '' : r.authority,
-      r.words, r.inbound === 0 ? 'ORPHAN' : ''];
+      r.clickDepth == null ? '' : r.clickDepth, r.words, flags.join(' ')];
   });
   ns.csv.download('link-lens-link-equity-' + new URL(origin).hostname + '.csv',
     ns.csv.build(['url', 'title', 'inbound_internal_links', 'internal_authority',
-      'word_count', 'flag'], rows), document);
+      'click_depth', 'word_count', 'flag'], rows), document);
 }
 
 function downloadAnchorCsv() {
@@ -559,6 +564,55 @@ function downloadAnchorCsv() {
   ns.csv.download('link-lens-anchors-' + new URL(origin).hostname + '.csv',
     ns.csv.build(['target_url', 'dominant_anchor', 'uses', 'total_links',
       'share_of_anchors', 'anchor_variants'], rows), document);
+}
+
+function renderPlanStatus(p) {
+  if (!p) { hide($('plan-progress')); hide($('btn-plan-csv')); return; }
+  var running = p.status === 'running';
+  var pct = p.total ? Math.round((p.done + p.failed) / p.total * 100) : 0;
+  $('plan-progress').innerHTML = '<div>' + (running ? 'Planning… ' : 'Plan ') +
+    pct + '% · ' + p.done + ' pages, ' + p.links + ' links found' +
+    (p.failed ? ', ' + p.failed + ' failed' : '') +
+    '</div><div class="bar"><i style="width:' + pct + '%"></i></div>';
+  show($('plan-progress'));
+  $('btn-plan').disabled = running;
+  $('btn-plan').textContent = (!running && p.remaining > 0)
+    ? '▶ Resume plan (' + p.remaining + ' left)' : '🗺 Build site-wide link plan';
+  $('btn-plan-stop').classList.toggle('hidden', !running);
+  $('btn-plan-csv').classList.toggle('hidden', p.links === 0);
+}
+
+function refreshPlanStatus() {
+  sendToBackground({ type: 'LL_PLAN_STATUS', origin: origin }).then(function (res) {
+    renderPlanStatus(res && res.plan);
+  });
+}
+
+function startPlan() {
+  hide($('plan-error'));
+  $('btn-plan').disabled = true;
+  sendToBackground({
+    type: 'LL_PLAN_START', origin: origin,
+    limit: 500, delayMs: parseInt($('crawl-speed').value, 10) || 1000,
+    maxPerPage: 3, maxPerTarget: 5, minScore: 45
+  }).then(function (res) {
+    if (!res || !res.ok) {
+      $('btn-plan').disabled = false;
+      fail($('plan-error'), (res && res.error) || 'Could not start the plan.');
+      return;
+    }
+    refreshPlanStatus();
+  });
+}
+
+function downloadPlanCsv() {
+  sendToBackground({ type: 'LL_PLAN_ROWS', origin: origin }).then(function (res) {
+    if (!res || !res.rows || !res.rows.length) return;
+    ns.csv.download('link-lens-site-plan-' + new URL(origin).hostname + '.csv',
+      ns.csv.build(['source_url', 'anchor_text', 'target_url', 'target_title', 'score',
+        'match_type', 'position', 'target_inbound_links', 'why', 'context_sentence'],
+        res.rows), document);
+  });
 }
 
 function downloadCannibalCsv() {
@@ -608,6 +662,14 @@ chrome.runtime.onMessage.addListener(function (msg) {
 
   if (msg.type === 'LL_KEYWORD_DONE') {
     showKwDone(msg);
+  }
+
+  if (msg.type === 'LL_PLAN_PROGRESS' && msg.origin === origin) {
+    renderPlanStatus({
+      status: msg.status, done: msg.done, failed: msg.failed, total: msg.total,
+      links: msg.links,
+      remaining: Math.max(0, (msg.total || 0) - (msg.done || 0) - (msg.failed || 0))
+    });
   }
 
   if (msg.type === 'LL_CRAWL_PROGRESS' && msg.origin === origin) {
@@ -707,6 +769,11 @@ document.addEventListener('DOMContentLoaded', function () {
   $('btn-orphan-csv').addEventListener('click', downloadOrphanCsv);
   $('btn-anchor-csv').addEventListener('click', downloadAnchorCsv);
   $('btn-cannibal-csv').addEventListener('click', downloadCannibalCsv);
+  $('btn-plan').addEventListener('click', startPlan);
+  $('btn-plan-stop').addEventListener('click', function () {
+    sendToBackground({ type: 'LL_PLAN_STOP' }).then(refreshPlanStatus);
+  });
+  $('btn-plan-csv').addEventListener('click', downloadPlanCsv);
   $('btn-crawl-clear').addEventListener('click', function () {
     sendToBackground({ type: 'LL_CRAWL_CLEAR', origin: origin }).then(function () {
       intelReport = null;

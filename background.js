@@ -98,8 +98,22 @@ function resumeIfNeeded() {
 }
 
 chrome.alarms.create('ll-crawl-watchdog', { periodInMinutes: 1 });
+function resumePlanIfNeeded() {
+  return chrome.storage.local.get(null).then(function (all) {
+    var pending = Object.keys(all).filter(function (k) { return k.indexOf('ll_plan:') === 0; })
+      .map(function (k) { return all[k]; })
+      .filter(function (p) { return p && p.status === 'running' && p.queue && p.queue.length; });
+    if (!pending.length) return;
+    return toOffscreen({ type: 'LL_PLAN_PING' }).then(function (res) {
+      if (res && res.running) return;
+      return toOffscreen({ type: 'LL_PLAN_START', origin: pending[0].origin,
+        delayMs: pending[0].delayMs });
+    });
+  });
+}
+
 chrome.alarms.onAlarm.addListener(function (alarm) {
-  if (alarm.name === 'll-crawl-watchdog') resumeIfNeeded();
+  if (alarm.name === 'll-crawl-watchdog') { resumeIfNeeded(); resumePlanIfNeeded(); }
 });
 chrome.runtime.onStartup.addListener(resumeIfNeeded);
 
@@ -185,6 +199,45 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
             remaining: (c.queue || []).length, errors: (c.errors || []).slice(0, 10)
           } : null
         });
+      });
+      return true;
+
+    case 'LL_PLAN_START':
+      toOffscreen({
+        type: 'LL_PLAN_START', origin: msg.origin, limit: msg.limit,
+        delayMs: msg.delayMs, maxPerPage: msg.maxPerPage,
+        maxPerTarget: msg.maxPerTarget, minScore: msg.minScore, fresh: msg.fresh
+      }).then(sendResponse);
+      return true;
+
+    case 'LL_PLAN_STOP':
+      toOffscreen({ type: 'LL_PLAN_STOP' }).then(sendResponse);
+      return true;
+
+    case 'LL_PLAN_STATUS':
+      chrome.storage.local.get('ll_plan:' + msg.origin).then(function (obj) {
+        var p = obj['ll_plan:' + msg.origin] || null;
+        sendResponse({
+          ok: true,
+          plan: p ? {
+            status: p.status, done: p.done, failed: p.failed, total: p.total,
+            links: (p.rows || []).length, remaining: (p.queue || []).length,
+            updatedAt: p.updatedAt
+          } : null
+        });
+      });
+      return true;
+
+    case 'LL_PLAN_ROWS':
+      chrome.storage.local.get('ll_plan:' + msg.origin).then(function (obj) {
+        var p = obj['ll_plan:' + msg.origin] || null;
+        sendResponse({ ok: true, rows: p ? p.rows : [] });
+      });
+      return true;
+
+    case 'LL_PLAN_CLEAR':
+      chrome.storage.local.remove('ll_plan:' + msg.origin).then(function () {
+        sendResponse({ ok: true });
       });
       return true;
 

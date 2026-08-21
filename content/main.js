@@ -579,13 +579,18 @@
             }
             var targets = index.targets;
             var auth = ns.intel.authority(model);
+            var depths = ns.intel.clickDepth(model);
             var under = ns.intel.underLinked(model, targets, 200);
-            if (auth) {
-              under.forEach(function (r) {
-                var k = ns.tokenizer.siteKey(r.url);
-                r.authority = auth[k] != null ? Math.round(auth[k] * 100) / 100 : null;
-              });
-            }
+            var buried = 0;
+            under.forEach(function (r) {
+              var k = ns.tokenizer.siteKey(r.url);
+              if (auth) r.authority = auth[k] != null ? Math.round(auth[k] * 100) / 100 : null;
+              if (depths) {
+                var d = depths[k];
+                r.clickDepth = (d === Infinity || d == null) ? '' : d;
+                if (d === Infinity || d > 3) buried++;
+              }
+            });
             sendResponse({
               ok: true,
               coverage: model.coverage,
@@ -593,7 +598,9 @@
               underLinked: under,
               anchorRisks: ns.intel.anchorRisks(model, targets, 100),
               cannibals: ns.intel.cannibalization(model, targets, { limit: 60 }),
-              hasAuthority: !!auth
+              buried: buried,
+              hasAuthority: !!auth,
+              hasDepth: !!depths
             });
           });
         }).catch(function (err) {
