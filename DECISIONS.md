@@ -75,6 +75,14 @@ Everything else follows the brief verbatim.
   so an orphan page with strong topical overlap outranks a well-linked page with a
   coincidental keyword hit.
 - Crawl fetches use `credentials: 'include'` so staging and auth-gated sites work.
+- **Out-edges are stored as interned integer ids** (crawl schema v2), not URL
+  strings — 40k edges cost ~200 KB instead of ~1.4 MB. `authority()` returns null
+  on a v1 crawl rather than guessing, so old crawls degrade instead of lying.
+- **PageRank**: damping 0.85, 25 iterations, dangling mass redistributed evenly,
+  normalized to mean 1.0 so the number is readable without a reference point.
+- **Cannibalization uses candidate generation, not O(N²)**: pages are indexed by
+  their 8 most distinctive terms and only pages sharing one are compared. Terms
+  held by more than 5% of the site are treated as themes, not duplicate signals.
 
 ## Matching engine v2 (1.1.0)
 

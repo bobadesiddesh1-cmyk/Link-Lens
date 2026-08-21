@@ -118,6 +118,12 @@ That model upgrades everything downstream:
 - **Orphan pages** — sitemap pages with zero editorial inbound links.
 - **Link equity report** — every page ranked by inbound internal links.
 - **Anchor diversity audit** — targets whose inbound anchors are over-optimized.
+- **Internal authority (PageRank)** — computed over editorial links only and
+  normalized so the average page scores 1.00; a page at 0.20 receives a fifth of
+  an average page's internal authority. Included in the link-equity CSV.
+- **Keyword cannibalization** — pairs of pages whose topic vectors are near
+  identical (≥ 72% similarity), i.e. two of your pages competing for the same
+  query, with each one's inbound link count so you know which to consolidate into.
 
 Two extra CSVs ship from this tab: link equity (with an ORPHAN flag) and anchor
 diversity. The whole model lives in `chrome.storage.local` — a 2,000-page crawl

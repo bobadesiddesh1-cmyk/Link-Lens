@@ -516,6 +516,8 @@ function loadIntelReports() {
     intelReport = res;
     $('orphan-count').textContent = res.orphans.length;
     $('risk-count').textContent = res.anchorRisks.length;
+    $('cannibal-count').textContent = res.cannibals ? res.cannibals.length : 0;
+    $('btn-cannibal-csv').classList.toggle('hidden', !(res.cannibals && res.cannibals.length));
     var box = $('intel-list');
     box.innerHTML = '';
     res.orphans.slice(0, 40).forEach(function (o) {
@@ -541,10 +543,12 @@ function loadIntelReports() {
 function downloadOrphanCsv() {
   if (!intelReport) return;
   var rows = intelReport.underLinked.map(function (r) {
-    return [r.url, r.title, r.inbound, r.words, r.inbound === 0 ? 'ORPHAN' : ''];
+    return [r.url, r.title, r.inbound, r.authority == null ? '' : r.authority,
+      r.words, r.inbound === 0 ? 'ORPHAN' : ''];
   });
   ns.csv.download('link-lens-link-equity-' + new URL(origin).hostname + '.csv',
-    ns.csv.build(['url', 'title', 'inbound_internal_links', 'word_count', 'flag'], rows), document);
+    ns.csv.build(['url', 'title', 'inbound_internal_links', 'internal_authority',
+      'word_count', 'flag'], rows), document);
 }
 
 function downloadAnchorCsv() {
@@ -555,6 +559,16 @@ function downloadAnchorCsv() {
   ns.csv.download('link-lens-anchors-' + new URL(origin).hostname + '.csv',
     ns.csv.build(['target_url', 'dominant_anchor', 'uses', 'total_links',
       'share_of_anchors', 'anchor_variants'], rows), document);
+}
+
+function downloadCannibalCsv() {
+  if (!intelReport || !intelReport.cannibals) return;
+  var rows = intelReport.cannibals.map(function (c) {
+    return [c.urlA, c.titleA, c.inboundA, c.urlB, c.titleB, c.inboundB, c.similarity + '%'];
+  });
+  ns.csv.download('link-lens-cannibalization-' + new URL(origin).hostname + '.csv',
+    ns.csv.build(['page_a', 'title_a', 'inbound_a', 'page_b', 'title_b', 'inbound_b',
+      'topic_similarity'], rows), document);
 }
 
 /* ------------------------------------------------------------------ *
@@ -692,6 +706,7 @@ document.addEventListener('DOMContentLoaded', function () {
   });
   $('btn-orphan-csv').addEventListener('click', downloadOrphanCsv);
   $('btn-anchor-csv').addEventListener('click', downloadAnchorCsv);
+  $('btn-cannibal-csv').addEventListener('click', downloadCannibalCsv);
   $('btn-crawl-clear').addEventListener('click', function () {
     sendToBackground({ type: 'LL_CRAWL_CLEAR', origin: origin }).then(function () {
       intelReport = null;

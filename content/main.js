@@ -578,12 +578,22 @@
               return;
             }
             var targets = index.targets;
+            var auth = ns.intel.authority(model);
+            var under = ns.intel.underLinked(model, targets, 200);
+            if (auth) {
+              under.forEach(function (r) {
+                var k = ns.tokenizer.siteKey(r.url);
+                r.authority = auth[k] != null ? Math.round(auth[k] * 100) / 100 : null;
+              });
+            }
             sendResponse({
               ok: true,
               coverage: model.coverage,
               orphans: ns.intel.orphanPages(model, targets),
-              underLinked: ns.intel.underLinked(model, targets, 200),
-              anchorRisks: ns.intel.anchorRisks(model, targets, 100)
+              underLinked: under,
+              anchorRisks: ns.intel.anchorRisks(model, targets, 100),
+              cannibals: ns.intel.cannibalization(model, targets, { limit: 60 }),
+              hasAuthority: !!auth
             });
           });
         }).catch(function (err) {

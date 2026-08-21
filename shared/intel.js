@@ -22,6 +22,7 @@
     if (keys.length === 0) return null;
     return {
       pages: crawl.pages,
+      ids: crawl.ids || {},
       df: crawl.df || {},
       inbound: crawl.inbound || {},
       anchors: crawl.anchors || {},
@@ -239,8 +240,125 @@
     return rows.slice(0, limit || 100);
   }
 
+  /**
+   * Internal authority flow (PageRank over EDITORIAL links only).
+   * Needs a v2 crawl (per-page out-edges); returns null otherwise.
+   * Scores are normalized so the average page scores 1.0 — "0.3" reads
+   * as "gets a third of an average page's internal authority".
+   */
+  function authority(model) {
+    var keys = Object.keys(model.pages);
+    var n = keys.length;
+    if (n === 0) return null;
+    var hasEdges = keys.some(function (k) { return Array.isArray(model.pages[k].o); });
+    if (!hasEdges) return null;
+
+    // id -> key (only ids that correspond to crawled pages participate)
+    var ids = model.ids || {};
+    var idToIndex = {};
+    for (var i = 0; i < n; i++) {
+      var id = ids[keys[i]];
+      if (id !== undefined) idToIndex[id] = i;
+    }
+
+    var out = [];
+    for (i = 0; i < n; i++) {
+      var edges = model.pages[keys[i]].o || [];
+      var targets = [];
+      for (var e = 0; e < edges.length; e++) {
+        var idx = idToIndex[edges[e]];
+        if (idx !== undefined && idx !== i) targets.push(idx);
+      }
+      out.push(targets);
+    }
+
+    var rank = new Array(n).fill(1 / n);
+    var damping = 0.85;
+    for (var iter = 0; iter < 25; iter++) {
+      var next = new Array(n).fill((1 - damping) / n);
+      var dangling = 0;
+      for (i = 0; i < n; i++) {
+        if (out[i].length === 0) { dangling += rank[i]; continue; }
+        var share = damping * rank[i] / out[i].length;
+        for (var t = 0; t < out[i].length; t++) next[out[i][t]] += share;
+      }
+      if (dangling > 0) {
+        var spread = damping * dangling / n;
+        for (i = 0; i < n; i++) next[i] += spread;
+      }
+      rank = next;
+    }
+
+    var scores = {};
+    for (i = 0; i < n; i++) scores[keys[i]] = rank[i] * n; // average = 1.0
+    return scores;
+  }
+
+  /**
+   * Keyword cannibalization: pairs of pages whose topic vectors are
+   * near-identical, i.e. two pages competing for the same query.
+   * Candidates are generated from shared top terms, so this stays fast
+   * on big sites instead of comparing every page with every other.
+   */
+  function cannibalization(model, targets, opts) {
+    opts = opts || {};
+    var threshold = opts.threshold || 0.72;
+    var limit = opts.limit || 60;
+
+    var byKey = {};
+    for (var i = 0; i < targets.length; i++) byKey[targets[i].siteKey] = targets[i];
+
+    var keys = Object.keys(model.pages);
+    var vecs = {}, postings = {};
+    for (i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      var page = model.pages[k];
+      if (!page.k || page.k.length === 0) continue;
+      vecs[k] = ts.vector(page.k, model.df, model.totalDocs);
+      // index the page under its 8 most distinctive terms
+      for (var j = 0; j < Math.min(8, page.k.length); j++) {
+        var term = page.k[j][0];
+        (postings[term] || (postings[term] = [])).push(k);
+      }
+    }
+
+    var seenPair = new Set();
+    var pairs = [];
+    // A term shared by a large slice of the site is a theme, not a
+    // duplicate signal — skip it, but scale the cutoff with site size so
+    // legitimate clusters on big sites still get compared.
+    var termCap = Math.max(40, Math.round(model.totalDocs * 0.05));
+    Object.keys(postings).forEach(function (term) {
+      var list = postings[term];
+      if (list.length > termCap) return;
+      for (var a = 0; a < list.length; a++) {
+        for (var b = a + 1; b < list.length; b++) {
+          var pairKey = list[a] < list[b] ? list[a] + '|' + list[b] : list[b] + '|' + list[a];
+          if (seenPair.has(pairKey)) continue;
+          seenPair.add(pairKey);
+          var sim = ts.cosine(vecs[list[a]], vecs[list[b]]);
+          if (sim < threshold) continue;
+          var ta = byKey[list[a]], tb = byKey[list[b]];
+          pairs.push({
+            urlA: ta ? ta.url : list[a],
+            urlB: tb ? tb.url : list[b],
+            titleA: (model.pages[list[a]].t || model.pages[list[a]].h || ''),
+            titleB: (model.pages[list[b]].t || model.pages[list[b]].h || ''),
+            similarity: Math.round(sim * 100),
+            inboundA: model.inbound[list[a]] || 0,
+            inboundB: model.inbound[list[b]] || 0
+          });
+        }
+      }
+    });
+    pairs.sort(function (x, y) { return y.similarity - x.similarity; });
+    return pairs.slice(0, limit);
+  }
+
   ns.intel = {
     buildModel: buildModel,
+    authority: authority,
+    cannibalization: cannibalization,
     enrich: enrich,
     score: score,
     medianInbound: medianInbound,
