@@ -67,15 +67,30 @@ function ensureOffscreen() {
   });
 }
 
-function toOffscreen(msg) {
-  return ensureOffscreen().then(function () {
-    return new Promise(function (resolve) {
-      msg.target = 'll-offscreen';
-      chrome.runtime.sendMessage(msg, function (res) {
-        void chrome.runtime.lastError;
-        resolve(res || { ok: false, error: 'crawler did not respond' });
-      });
+function sendOnce(msg) {
+  return new Promise(function (resolve) {
+    chrome.runtime.sendMessage(msg, function (res) {
+      void chrome.runtime.lastError;
+      resolve(res || null);
     });
+  });
+}
+
+/**
+ * Message the offscreen worker, retrying briefly: a freshly created
+ * offscreen document exists before its scripts have registered their
+ * message listeners, so the first send can land in a gap.
+ */
+function toOffscreen(msg, attempt) {
+  attempt = attempt || 0;
+  return ensureOffscreen().then(function () {
+    msg.target = 'll-offscreen';
+    return sendOnce(msg);
+  }).then(function (res) {
+    if (res) return res;
+    if (attempt >= 6) return { ok: false, error: 'crawler did not respond' };
+    return new Promise(function (r) { setTimeout(r, 250); })
+      .then(function () { return toOffscreen(msg, attempt + 1); });
   });
 }
 
@@ -196,7 +211,8 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
           crawl: c ? {
             status: c.status, done: c.done, failed: c.failed, total: c.total,
             pages: Object.keys(c.pages || {}).length, updatedAt: c.updatedAt,
-            remaining: (c.queue || []).length, errors: (c.errors || []).slice(0, 10)
+            remaining: (c.queue || []).length, lastError: c.lastError || null,
+            errors: (c.errors || []).slice(0, 10)
           } : null
         });
       });

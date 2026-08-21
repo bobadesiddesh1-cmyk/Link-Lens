@@ -441,6 +441,15 @@ var intelReport = null;
 
 function renderCrawlStatus(c) {
   var dot = $('crawl-dot');
+  if (c && c.status === 'error') {
+    dot.className = 'dot stale';
+    $('crawl-text').textContent = 'Crawl stopped';
+    $('crawl-sub').textContent = '';
+    fail($('crawl-error'), c.error || c.lastError || 'The crawler hit an error.');
+    $('btn-crawl').disabled = false;
+    hide($('btn-crawl-stop'));
+    return;
+  }
   if (!c) {
     dot.className = 'dot stale';
     $('crawl-text').textContent = 'No crawl yet for this site';
@@ -567,6 +576,12 @@ function downloadAnchorCsv() {
 }
 
 function renderPlanStatus(p) {
+  if (p && p.status === 'error') {
+    fail($('plan-error'), p.error || p.lastError || 'The planner hit an error.');
+    $('btn-plan').disabled = false;
+    hide($('btn-plan-stop'));
+    return;
+  }
   if (!p) { hide($('plan-progress')); hide($('btn-plan-csv')); return; }
   var running = p.status === 'running';
   var pct = p.total ? Math.round((p.done + p.failed) / p.total * 100) : 0;
@@ -667,7 +682,7 @@ chrome.runtime.onMessage.addListener(function (msg) {
   if (msg.type === 'LL_PLAN_PROGRESS' && msg.origin === origin) {
     renderPlanStatus({
       status: msg.status, done: msg.done, failed: msg.failed, total: msg.total,
-      links: msg.links,
+      links: msg.links, error: msg.error,
       remaining: Math.max(0, (msg.total || 0) - (msg.done || 0) - (msg.failed || 0))
     });
   }

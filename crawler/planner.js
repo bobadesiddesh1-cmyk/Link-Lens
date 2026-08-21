@@ -231,10 +231,16 @@
 
     if (msg.type === 'LL_PLAN_START') {
       if (running) { sendResponse({ ok: false, error: 'A plan run is already going.' }); return; }
-      start(msg).then(sendResponse, function (e) {
-        sendResponse({ ok: false, error: String(e && e.message || e) });
+      sendResponse({ ok: true, accepted: true }); // see crawler.js note
+      start(msg).catch(function (e) {
+        var message = String(e && e.message || e);
+        if (state) { state.status = 'error'; state.lastError = message; }
+        chrome.runtime.sendMessage({
+          type: 'LL_PLAN_PROGRESS', origin: msg.origin, status: 'error',
+          done: 0, failed: 0, total: 0, links: 0, error: message
+        }, function () { void chrome.runtime.lastError; });
       });
-      return true;
+      return;
     }
     if (msg.type === 'LL_PLAN_STOP') {
       stopRequested = true;
