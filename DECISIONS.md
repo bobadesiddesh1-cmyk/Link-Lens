@@ -106,11 +106,15 @@ replaces inference with evidence: what the page actually ranks for.
   Adding it to `host_permissions` would have shown every existing user a new
   permission warning and disabled the extension until they re-approved it — a
   hard cost for a feature most users may never turn on.
-- **The permission request must happen in the side panel**, synchronously inside
-  the click. `chrome.permissions.request` needs a user gesture and a service
-  worker never has one; requesting from the worker leaves the promise unsettled
-  and the button spinning forever. (Caught by the real-Chrome test, not by
-  reasoning — hence `gsc-live.js`.)
+- **Both the permission request AND the interactive sign-in must happen in the
+  side panel, not the service worker.** `chrome.permissions.request` needs a user
+  gesture, and `getAuthToken({interactive:true})` needs a window to anchor the
+  account chooser to — a worker is neither. Called from the worker, the first
+  hangs and the second can lose its callback when the worker suspends mid-prompt;
+  either way the panel spins forever with nothing to show. The panel now obtains
+  the token and passes it to the worker, which only ever refreshes silently.
+  Every auth path also carries an explicit timeout, so a stall becomes a message
+  rather than an indefinite spinner.
 - **`key` is pinned in the manifest** so a locally loaded build keeps the store
   extension ID. `getAuthToken` refuses to run when the running ID differs from
   the OAuth client's Item ID, which makes local testing impossible otherwise.

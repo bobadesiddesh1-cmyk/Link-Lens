@@ -154,6 +154,13 @@ var GSC_DAYS = 90;
 var GSC_ROWS_PER_CALL = 25000;
 var GSC_MAX_CALLS = 4; // rows arrive click-desc, so the head is what matters
 
+/**
+ * Silent token fetch. INTERACTIVE sign-in must NOT happen here: a service
+ * worker is not a window, so the account chooser has nothing to anchor to
+ * and the callback can be lost when the worker is suspended mid-prompt —
+ * the panel just spins forever. The side panel obtains the token (it is a
+ * real document) and passes it in; this worker only ever refreshes.
+ */
 function ll_gscToken(interactive) {
   return new Promise(function (resolve, reject) {
     if (!chrome.identity || !chrome.identity.getAuthToken) {
@@ -234,9 +241,13 @@ function ll_gscFetch(token, path, body) {
   });
 }
 
-/** Retry once with a fresh token: cached tokens expire after an hour. */
-function ll_gscCall(path, body) {
-  return ll_gscToken(false).then(function (token) {
+/**
+ * Retry once with a fresh token: cached tokens expire after an hour.
+ * `supplied` is the token the side panel obtained interactively — see the
+ * note on ll_gscToken about why interactive sign-in cannot live here.
+ */
+function ll_gscCall(path, body, supplied) {
+  return (supplied ? Promise.resolve(supplied) : ll_gscToken(false)).then(function (token) {
     return ll_gscFetch(token, path, body).catch(function (err) {
       if (!err.authFailure) throw err;
       return new Promise(function (resolve) {
@@ -265,7 +276,7 @@ function ll_gscProgress(origin, status, extra) {
 }
 
 /** Pull query x page rows and fold them into the stored model. */
-function ll_gscSync(origin, property) {
+function ll_gscSync(origin, property, token) {
   var range = ll_gscDateRange();
   var rows = [];
   var path = '/sites/' + encodeURIComponent(property) + '/searchAnalytics/query';
@@ -280,7 +291,7 @@ function ll_gscSync(origin, property) {
       rowLimit: GSC_ROWS_PER_CALL,
       startRow: call * GSC_ROWS_PER_CALL,
       dataState: 'final'
-    }).then(function (res) {
+    }, token).then(function (res) {
       var batch = (res && res.rows) || [];
       rows = rows.concat(batch);
       if (batch.length < GSC_ROWS_PER_CALL) return; // last page
@@ -466,7 +477,7 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
         if (!granted) {
           throw new Error('Access to googleapis.com was not granted — click Connect again and choose Allow.');
         }
-        return ll_gscToken(true);
+        return msg.token || ll_gscToken(false);
       }).then(function (token) {
         return ll_gscFetch(token, '/sites');
       }).then(function (res) {
@@ -493,10 +504,11 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
         if (!granted) {
           throw new Error('Access to googleapis.com was not granted — click Connect again and choose Allow.');
         }
-        return ll_gscToken(true);
+        return msg.token || ll_gscToken(false);
       }).then(function (token) {
-        return ll_gscFetch(token, '/sites');
-      }).then(function (res) {
+        return ll_gscFetch(token, '/sites').then(function (res) { return { res: res, token: token }; });
+      }).then(function (both) {
+        var res = both.res;
         var list = (res && res.siteEntry) || [];
         var property = msg.property ||
           self.__linkLens.gsc.matchProperty(list, msg.origin);
@@ -510,7 +522,7 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
           });
           return null;
         }
-        return ll_gscSync(msg.origin, property).then(function (model) {
+        return ll_gscSync(msg.origin, property, both.token).then(function (model) {
           sendResponse({ ok: true, gsc: ll_gscSummary(model),
             properties: list.map(function (p) { return p.siteUrl; }) });
         });
@@ -527,7 +539,7 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
         var stored = obj[gscKey(msg.origin)];
         var property = msg.property || (stored && stored.property);
         if (!property) throw new Error('Connect Search Console first.');
-        return ll_gscSync(msg.origin, property).then(function (model) {
+        return ll_gscSync(msg.origin, property, msg.token).then(function (model) {
           sendResponse({ ok: true, gsc: ll_gscSummary(model) });
         });
       }).catch(function (err) {
@@ -541,7 +553,7 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
       // Drop the stored data first, then hand the token back to Google so
       // the grant is genuinely revoked rather than just forgotten locally.
       chrome.storage.local.remove(gscKey(msg.origin)).then(function () {
-        return ll_gscToken(false).catch(function () { return null; });
+        return msg.token || ll_gscToken(false).catch(function () { return null; });
       }).then(function (token) {
         if (!token) return;
         return fetch('https://accounts.google.com/o/oauth2/revoke?token=' + token)

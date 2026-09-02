@@ -568,15 +568,63 @@ function connectGsc() {
   });
 }
 
+/**
+ * Interactive sign-in runs HERE, in the panel, not in the service worker:
+ * the worker is not a window, so Chrome has nothing to anchor the account
+ * chooser to and the callback can vanish when the worker suspends — which
+ * shows up as a spinner that never resolves.
+ */
+function gscToken(interactive) {
+  return new Promise(function (resolve, reject) {
+    if (!chrome.identity || !chrome.identity.getAuthToken) {
+      reject(new Error('Google sign-in needs Chrome (chrome.identity is unavailable here).'));
+      return;
+    }
+    var settled = false;
+    var timer = setTimeout(function () {
+      if (settled) return;
+      settled = true;
+      reject(new Error('Google did not finish signing in. Make sure Chrome itself is ' +
+        'signed in to a Google account (chrome://settings/people), then try again.'));
+    }, 90000);
+    try {
+      chrome.identity.getAuthToken({ interactive: !!interactive }, function (token) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        var err = chrome.runtime.lastError;
+        if (err || !token) return reject(new Error((err && err.message) || 'not signed in'));
+        resolve(typeof token === 'string' ? token : token.token);
+      });
+    } catch (e) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(e);
+    }
+  });
+}
+
+var gscAuthToken = null; // this session's access token, from the panel
+
 /** Step 1: sign in and show which properties this account can read. */
 function listGscProperties() {
-  sendToBackground({ type: 'LL_GSC_LIST', origin: origin }).then(function (res) {
+  gscToken(true).then(function (token) {
+    gscAuthToken = token;
+    gscBusy(true, 'Reading your Search Console properties…');
+    return sendToBackground({ type: 'LL_GSC_LIST', origin: origin, token: token });
+  }).then(function (res) {
     gscBusy(false);
     if (!res || !res.ok) {
       fail($('gsc-error'), (res && res.error) || 'Could not reach Search Console.');
       return;
     }
     renderProperties(res);
+  }).catch(function (err) {
+    gscBusy(false);
+    var m = String(err && err.message || err);
+    fail($('gsc-error'), /cancel|closed|did not approve/i.test(m)
+      ? 'Google sign-in was cancelled.' : m);
   });
 }
 
@@ -586,7 +634,8 @@ function useGscProperty() {
   var property = $('gsc-property').value;
   if (!property) return;
   gscBusy(true, 'Fetching Search Console data…');
-  sendToBackground({ type: 'LL_GSC_CONNECT', origin: origin, property: property })
+  sendToBackground({ type: 'LL_GSC_CONNECT', origin: origin, property: property,
+                     token: gscAuthToken })
     .then(function (res) {
       gscBusy(false);
       if (!res || !res.ok) {
@@ -600,21 +649,37 @@ function useGscProperty() {
 function syncGsc() {
   hide($('gsc-error'));
   gscBusy(true, 'Fetching Search Console data…');
-  sendToBackground({ type: 'LL_GSC_SYNC', origin: origin }).then(function (res) {
+  // A refresh may happen an hour later, when the panel's token has expired.
+  gscToken(false).catch(function () { return gscToken(true); }).then(function (token) {
+    gscAuthToken = token;
+    return sendToBackground({ type: 'LL_GSC_SYNC', origin: origin, token: token });
+  }).then(function (res) {
     gscBusy(false);
     if (!res || !res.ok) {
       fail($('gsc-error'), (res && res.error) || 'Refresh failed.');
       return;
     }
     renderGsc(res.gsc);
+  }).catch(function (err) {
+    gscBusy(false);
+    fail($('gsc-error'), String(err && err.message || err));
   });
 }
 
 function disconnectGsc() {
   hide($('gsc-error'));
-  sendToBackground({ type: 'LL_GSC_DISCONNECT', origin: origin }).then(function () {
-    renderGsc(null);
-  });
+  var token = gscAuthToken;
+  gscAuthToken = null;
+  sendToBackground({ type: 'LL_GSC_DISCONNECT', origin: origin, token: token })
+    .then(function () {
+      // Also drop the panel's own cached token so the next Connect asks again.
+      if (token && chrome.identity && chrome.identity.removeCachedAuthToken) {
+        chrome.identity.removeCachedAuthToken({ token: token }, function () {
+          void chrome.runtime.lastError;
+        });
+      }
+      renderGsc(null);
+    });
 }
 
 /* ------------------------------------------------------------------ *
