@@ -13,7 +13,13 @@
  */
 'use strict';
 
-importScripts('shared/tokenizer.js', 'shared/gsc.js');
+// If these ever fail to load, the worker must still register: the panel's
+// own copies cover the UI, and GSC calls report a clear error instead.
+try {
+  importScripts('shared/tokenizer.js', 'shared/gsc.js');
+} catch (e) {
+  console.error('Link Lens: failed to load shared modules —', e && e.message);
+}
 
 try {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
@@ -53,6 +59,11 @@ function setState(origin, state) {
 var creatingOffscreen = null;
 
 function ensureOffscreen() {
+  if (!chrome.offscreen) {
+    return Promise.reject(new Error(
+      'Background crawling needs Chrome 109+ with the offscreen API available. ' +
+      'Scanning single pages still works.'));
+  }
   return chrome.offscreen.hasDocument().then(function (has) {
     if (has) return true;
     if (!creatingOffscreen) {
@@ -88,7 +99,16 @@ function sendOnce(msg) {
  */
 function toOffscreen(msg, attempt) {
   attempt = attempt || 0;
-  return ensureOffscreen().then(function () {
+  return ensureOffscreen().catch(function (e) {
+    return { __fatal: String(e && e.message || e) };
+  }).then(function (pre) {
+    if (pre && pre.__fatal) return { ok: false, error: pre.__fatal };
+    return sendToOffscreen(msg, attempt);
+  });
+}
+
+function sendToOffscreen(msg, attempt) {
+  return Promise.resolve().then(function () {
     msg.target = 'll-offscreen';
     return sendOnce(msg);
   }).then(function (res) {
@@ -117,7 +137,6 @@ function resumeIfNeeded() {
   });
 }
 
-chrome.alarms.create('ll-crawl-watchdog', { periodInMinutes: 1 });
 function resumePlanIfNeeded() {
   return chrome.storage.local.get(null).then(function (all) {
     var pending = Object.keys(all)
@@ -134,10 +153,28 @@ function resumePlanIfNeeded() {
   });
 }
 
-chrome.alarms.onAlarm.addListener(function (alarm) {
-  if (alarm.name === 'll-crawl-watchdog') { resumeIfNeeded(); resumePlanIfNeeded(); }
+/**
+ * The watchdog is a nice-to-have: it resumes an interrupted crawl. A
+ * service worker that THROWS at load fails to register entirely, taking
+ * the whole extension down with it (side panel included), so no optional
+ * API is touched outside a guard — chrome.alarms can be absent under
+ * enterprise policy or a restricted profile.
+ */
+function ll_safe(label, fn) {
+  try { fn(); } catch (e) {
+    console.warn('Link Lens: ' + label + ' unavailable —', e && e.message);
+  }
+}
+
+ll_safe('alarms', function () {
+  chrome.alarms.create('ll-crawl-watchdog', { periodInMinutes: 1 });
+  chrome.alarms.onAlarm.addListener(function (alarm) {
+    if (alarm.name === 'll-crawl-watchdog') { resumeIfNeeded(); resumePlanIfNeeded(); }
+  });
 });
-chrome.runtime.onStartup.addListener(resumeIfNeeded);
+ll_safe('startup hook', function () {
+  chrome.runtime.onStartup.addListener(resumeIfNeeded);
+});
 
 /* ------------------------------------------------------------------ *
  * Google Search Console

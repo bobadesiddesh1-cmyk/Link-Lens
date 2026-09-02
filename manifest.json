@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Link Lens — Internal Linking Opportunity Finder",
   "short_name": "Link Lens",
-  "version": "2.4.2",
+  "version": "2.4.3",
   "description": "Highlights the sentences that should link to other pages of your site, with anchor text and target URL. Any CMS. 100% local.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAgv2xQWNaJc5niaOYvm9GG5u+gg5/uU97AdvW5lhXnplu9zzmBZaWzVzZdpDnX0MI6iuvMtiOxhjmTPxcgLYgaw7/vAd5SjrVquyYtLtOBEyjmWCBdnGA67YuPd0hFkJJI3jVRuUNYYGPraf8NHTqVygyhUcqxJIfLX/XscHVyn7oudFFXD+cLPI6ZvmUmsj7QtGGzi0gBcz6myX5yc0mYEsgXb06JtcBG1DHmK0dIqiRNjuCZB/eiqvLNo1O4WbNAii7LExF5MJY8LifHji4uWHi5wG8k+6yRY1dL2RpSkaFTSTtDUy4JYdHeiLjFan6bgPp0ed1OqkyIS4PNRsSSQIDAQAB",
   "permissions": [

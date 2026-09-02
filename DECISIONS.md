@@ -142,6 +142,22 @@ replaces inference with evidence: what the page actually ranks for.
   connection the tool behaves exactly as 2.3.0 did, and the new CSV columns are
   simply blank.
 
+## Service-worker resilience (2.4.3)
+
+- **No optional chrome API is touched at the worker's top level without a
+  guard.** An MV3 service worker that throws while evaluating fails to register
+  entirely (Chrome reports "registration failed, status code: 15"), and that
+  takes down the side panel, scanning, everything. `chrome.alarms.create` ran
+  unguarded at load; where the API is unavailable — enterprise policy, a
+  restricted profile, a permission not applied — the whole extension died with a
+  one-line TypeError.
+- **Degrade, don't disappear.** Missing `alarms` costs only the crawl-resume
+  watchdog. Missing `offscreen` costs background crawling, and `toOffscreen`
+  now returns an explaining error instead of retrying into a hang. Page scanning
+  and Search Console keep working in both cases. Covered by a degraded-mode test
+  that strips both permissions and asserts the worker still registers and
+  answers.
+
 ## Keyword mapping, precision and site-wide keywords (2.3.0)
 
 Feedback after real use: bulk audits stopped at 20 URLs, the keyword check
