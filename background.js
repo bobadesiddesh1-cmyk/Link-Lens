@@ -457,6 +457,37 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
       });
       return true;
 
+    case 'LL_GSC_LIST':
+      // Sign in and report every property this account can read, marking
+      // the one that covers the current site. Choosing is the user's call:
+      // a site can legitimately sit under a domain property, a URL-prefix
+      // property, or a www variant of either.
+      ll_gscHostPermission().then(function (granted) {
+        if (!granted) {
+          throw new Error('Access to googleapis.com was not granted — click Connect again and choose Allow.');
+        }
+        return ll_gscToken(true);
+      }).then(function (token) {
+        return ll_gscFetch(token, '/sites');
+      }).then(function (res) {
+        var list = ((res && res.siteEntry) || []).filter(function (p) {
+          return p.permissionLevel !== 'siteUnverifiedUser';
+        });
+        sendResponse({
+          ok: true,
+          properties: list.map(function (p) {
+            return { siteUrl: p.siteUrl, permissionLevel: p.permissionLevel,
+                     label: self.__linkLens.gsc.propertyLabel(p.siteUrl) };
+          }),
+          suggested: self.__linkLens.gsc.matchProperty(list, msg.origin)
+        });
+      }).catch(function (err) {
+        var m = String(err && err.message || err);
+        sendResponse({ ok: false, error: /not signed in|canceled|cancelled/i.test(m)
+          ? 'Google sign-in was cancelled.' : m });
+      });
+      return true;
+
     case 'LL_GSC_CONNECT':
       ll_gscHostPermission().then(function (granted) {
         if (!granted) {

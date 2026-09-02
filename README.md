@@ -156,9 +156,12 @@ is roughly 2–4 MB — and nothing leaves the browser.
 ### 4b. Google Search Console (optional)
 
 Site intel tab → **Connect Google Search Console**. Sign in with Google (read-only
-access, `webmasters.readonly`), Link Lens matches the site you're on to one of your
-properties — URL-prefix or `sc-domain:` — and pulls the last 90 days of
-**query × page** data. Everything downstream stops guessing:
+access, `webmasters.readonly`) and Link Lens lists every property that account can
+read, pre-selecting the one that covers the site you're on (URL-prefix or
+`sc-domain:`). **You choose which property to use** — the dropdown stays available
+afterwards so you can switch, e.g. from a blog sub-path property to the domain
+property. Picking one pulls the last 90 days of **query × page** data, and
+everything downstream stops guessing:
 
 - **Keyword map from evidence.** A URL's primary keyword becomes the query it
   actually earns clicks for, not its slug or H1. A page titled "Zero Balance

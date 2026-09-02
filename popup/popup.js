@@ -487,6 +487,7 @@ function renderGsc(g) {
     $('btn-gsc-connect').textContent = '🔗 Connect Google Search Console';
     show($('btn-gsc-connect'));
     hide($('gsc-actions'));
+    hide($('gsc-picker'));
     return;
   }
   dot.className = 'dot fresh';
@@ -498,6 +499,38 @@ function renderGsc(g) {
     g.startDate + ' → ' + g.endDate + ' · synced ' + timeAgo(g.updatedAt);
   hide($('btn-gsc-connect'));
   show($('gsc-actions'));
+  // Keep the picker available so the property can be switched later
+  // (e.g. from a URL-prefix property to the domain property).
+  if ($('gsc-property').options.length) {
+    $('gsc-property').value = g.property;
+    $('btn-gsc-use').textContent = '↻ Switch to this property';
+    show($('gsc-picker'));
+  }
+}
+
+/** Populate the property dropdown after sign-in. */
+function renderProperties(res) {
+  var sel = $('gsc-property');
+  sel.innerHTML = '';
+  (res.properties || []).forEach(function (p) {
+    var opt = document.createElement('option');
+    opt.value = p.siteUrl;
+    opt.textContent = p.label + (p.siteUrl === res.suggested ? '  ✓ covers this site' : '');
+    sel.appendChild(opt);
+  });
+  if (!sel.options.length) {
+    fail($('gsc-error'), 'This Google account has no verified Search Console ' +
+      'properties. Add and verify the site in Search Console first.');
+    return false;
+  }
+  sel.value = res.suggested || sel.options[0].value;
+  $('gsc-picker-note').textContent = res.suggested
+    ? 'Auto-matched to ' + new URL(origin).hostname + '. Pick a different property if you prefer.'
+    : 'None of your properties obviously covers ' + new URL(origin).hostname +
+      ' — choose the right one, or verify the site in Search Console first.';
+  $('btn-gsc-use').textContent = '⬇ Fetch data for this property';
+  show($('gsc-picker'));
+  return true;
 }
 
 function refreshGsc() {
@@ -509,6 +542,7 @@ function refreshGsc() {
 function gscBusy(busy, label) {
   $('btn-gsc-connect').disabled = busy;
   $('btn-gsc-sync').disabled = busy;
+  $('btn-gsc-use').disabled = busy;
   if (busy) {
     $('gsc-progress').innerHTML = '<span class="spin">◌</span> ' + label;
     show($('gsc-progress'));
@@ -530,23 +564,37 @@ function connectGsc() {
       return;
     }
     gscBusy(true, 'Waiting for Google sign-in…');
-    startGscConnect();
+    listGscProperties();
   });
 }
 
-function startGscConnect() {
-  sendToBackground({ type: 'LL_GSC_CONNECT', origin: origin }).then(function (res) {
+/** Step 1: sign in and show which properties this account can read. */
+function listGscProperties() {
+  sendToBackground({ type: 'LL_GSC_LIST', origin: origin }).then(function (res) {
     gscBusy(false);
     if (!res || !res.ok) {
-      var msg = (res && res.error) || 'Could not connect to Search Console.';
-      if (res && res.noProperty && res.properties && res.properties.length) {
-        msg += ' Properties on this account: ' + res.properties.slice(0, 6).join(', ');
-      }
-      fail($('gsc-error'), msg);
+      fail($('gsc-error'), (res && res.error) || 'Could not reach Search Console.');
       return;
     }
-    renderGsc(res.gsc);
+    renderProperties(res);
   });
+}
+
+/** Step 2: pull the data for whichever property the user chose. */
+function useGscProperty() {
+  hide($('gsc-error'));
+  var property = $('gsc-property').value;
+  if (!property) return;
+  gscBusy(true, 'Fetching Search Console data…');
+  sendToBackground({ type: 'LL_GSC_CONNECT', origin: origin, property: property })
+    .then(function (res) {
+      gscBusy(false);
+      if (!res || !res.ok) {
+        fail($('gsc-error'), (res && res.error) || 'Could not load that property.');
+        return;
+      }
+      renderGsc(res.gsc);
+    });
 }
 
 function syncGsc() {
@@ -903,6 +951,7 @@ document.addEventListener('DOMContentLoaded', function () {
   $('tab-intel').addEventListener('click', function () { switchTab('intel'); });
   $('btn-crawl').addEventListener('click', startCrawl);
   $('btn-gsc-connect').addEventListener('click', connectGsc);
+  $('btn-gsc-use').addEventListener('click', useGscProperty);
   $('btn-gsc-sync').addEventListener('click', syncGsc);
   $('btn-gsc-disconnect').addEventListener('click', disconnectGsc);
   $('btn-crawl-stop').addEventListener('click', function () {

@@ -114,6 +114,13 @@ replaces inference with evidence: what the page actually ranks for.
 - **`key` is pinned in the manifest** so a locally loaded build keeps the store
   extension ID. `getAuthToken` refuses to run when the running ID differs from
   the OAuth client's Item ID, which makes local testing impossible otherwise.
+- **The user picks the property, we only suggest one.** Auto-matching alone is
+  wrong often enough to matter: a site can sit under a domain property, a
+  URL-prefix property, a www variant, or a sub-path property, and only the owner
+  knows which one they actually maintain. `LL_GSC_LIST` signs in and returns the
+  readable properties with the auto-match flagged; nothing is fetched until the
+  user confirms. The picker stays visible after connecting so the choice is
+  reversible.
 - **90 days, page × query, up to 4 pages of 25k rows.** Rows come back sorted by
   clicks, so the head is what matters; the tail below a page's top ten queries
   never decides an anchor and would cost storage for nothing.
