@@ -47,7 +47,42 @@
     }, 1000);
   }
 
+  /**
+   * Ahrefs "Link opportunities" export format: TAB separated, EVERY field
+   * quoted (numbers included), CRLF line endings, UTF-16 LE with BOM.
+   * Matching it byte-for-byte means the file drops straight into the
+   * workbooks the team already uses instead of being reshaped by hand.
+   */
+  function buildTsv(headers, rows) {
+    var q = function (v) {
+      return '"' + String(v == null ? '' : v).replace(/"/g, '""')
+        .replace(/[\r\n]+/g, ' ') + '"';
+    };
+    var out = [headers.map(q).join('\t')];
+    for (var i = 0; i < rows.length; i++) out.push(rows[i].map(q).join('\t'));
+    return out.join('\r\n') + '\r\n';
+  }
+
+  /** Download `text` as UTF-16 LE with a BOM (what Ahrefs emits). */
+  function downloadUtf16(filename, text, doc) {
+    var units = new Uint16Array(text.length + 1);
+    units[0] = 0xFEFF; // BOM
+    for (var i = 0; i < text.length; i++) units[i + 1] = text.charCodeAt(i);
+    var blob = new Blob([units.buffer], { type: 'text/tab-separated-values' });
+    var d = doc || document;
+    var url = URL.createObjectURL(blob);
+    var a = d.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.style.display = 'none';
+    d.body.appendChild(a);
+    a.click();
+    setTimeout(function () { a.remove(); URL.revokeObjectURL(url); }, 1000);
+  }
+
   ns.csv = {
+    buildTsv: buildTsv,
+    downloadUtf16: downloadUtf16,
     escapeField: escapeField,
     build: build,
     download: download

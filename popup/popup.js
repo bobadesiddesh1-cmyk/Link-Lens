@@ -327,6 +327,36 @@ function downloadRunCsv(mode) {
   });
 }
 
+var AHREFS_HEADERS = [
+  'PR', 'Source page', 'Source is canonical', 'Source is noindex',
+  'Source URL Rating', 'Source total traffic', 'Keyword', 'Keyword context',
+  'Link opportunity patch', 'Link opportunity patch status',
+  'Keyword search volume', 'Keyword difficulty', 'Target page',
+  'Target position', 'Target traffic'
+];
+
+/**
+ * Export a run in the Ahrefs Site Audit "Link opportunities" shape — same
+ * 15 columns, same order, same UTF-16/TAB encoding — so it drops into the
+ * team's existing workbooks without reshaping.
+ */
+function downloadAhrefs(mode) {
+  sendToBackground({ type: 'LL_PLAN_ROWS', mode: mode, origin: origin }).then(function (res) {
+    if (!res || !res.rows || !res.rows.length) return;
+    return ensureInjected()
+      .then(function () { return sendToTab({ type: 'LL_AHREFS_ROWS', rows: res.rows }); })
+      .then(function (out) {
+        if (!out || !out.ok || !out.rows.length) return;
+        ns.csv.downloadUtf16(
+          'link-lens-link-opportunities-' + new URL(origin).hostname + '.tsv',
+          ns.csv.buildTsv(AHREFS_HEADERS, out.rows), document);
+      });
+  }).catch(function (err) {
+    var box = mode === 'audit' ? $('bulk-error') : $('plan-error');
+    fail(box, friendlyError(err));
+  });
+}
+
 function restoreBulkState() {
   refreshRun('audit');
   refreshRun('keywords');
@@ -778,6 +808,16 @@ function loadIntelReports() {
     $('cannibal-count').textContent = res.cannibals ? res.cannibals.length : 0;
     $('buried-count').textContent = res.buried || 0;
     $('btn-cannibal-csv').classList.toggle('hidden', !(res.cannibals && res.cannibals.length));
+
+    // Crawl hygiene: pages we deliberately refuse to link to.
+    var hyg = [];
+    if (res.noindexed) hyg.push(res.noindexed + ' noindex page' + (res.noindexed === 1 ? '' : 's'));
+    if (res.canonicalised) hyg.push(res.canonicalised + ' canonicalised elsewhere');
+    $('hygiene-line').textContent = hyg.length
+      ? 'Excluded as link targets: ' + hyg.join(' · ')
+      : '';
+
+    renderGscReports(res);
     var box = $('intel-list');
     box.innerHTML = '';
     res.orphans.slice(0, 40).forEach(function (o) {
@@ -844,6 +884,7 @@ function renderPlanStatus(p) {
     ? '▶ Resume plan (' + p.remaining + ' left)' : '🗺 Build site-wide link plan';
   $('btn-plan-stop').classList.toggle('hidden', !running);
   $('btn-plan-csv').classList.toggle('hidden', p.links === 0);
+  $('btn-plan-ahrefs').classList.toggle('hidden', p.links === 0);
 }
 
 function refreshPlanStatus() {
@@ -870,6 +911,58 @@ function startPlan() {
 }
 
 function downloadPlanCsv() { downloadRunCsv('plan'); }
+
+/** Quick wins + real cannibalization — only meaningful with GSC connected. */
+function renderGscReports(res) {
+  var wins = res.quickWins || [];
+  var cans = res.gscCannibals || [];
+  if (!res.hasGsc || (wins.length === 0 && cans.length === 0)) {
+    hide($('gsc-reports'));
+    return;
+  }
+  $('qw-count').textContent = wins.length;
+  $('gcan-count').textContent = cans.length;
+  var box = $('qw-list');
+  box.innerHTML = '';
+  wins.slice(0, 40).forEach(function (w) {
+    var row = document.createElement('div');
+    row.className = 'bl-row';
+    var u = document.createElement('span');
+    u.className = 'bl-url';
+    u.textContent = w.query + ' — ' + w.url.replace(origin, '');
+    var m = document.createElement('span');
+    m.className = 'bl-meta';
+    m.textContent = '#' + w.position + ' · ' + w.impressions.toLocaleString() + ' impr';
+    row.appendChild(u); row.appendChild(m);
+    box.appendChild(row);
+  });
+  $('btn-qw-csv').classList.toggle('hidden', wins.length === 0);
+  $('btn-gcan-csv').classList.toggle('hidden', cans.length === 0);
+  show($('gsc-reports'));
+}
+
+function downloadQuickWinsCsv() {
+  if (!intelReport || !intelReport.quickWins) return;
+  var rows = intelReport.quickWins.map(function (w) {
+    return [w.url, w.query, w.position, w.impressions, w.clicks];
+  });
+  ns.csv.download('link-lens-quick-wins-' + new URL(origin).hostname + '.csv',
+    ns.csv.build(['url', 'query', 'current_position', 'impressions', 'page_clicks'], rows), document);
+}
+
+function downloadGscCannibalCsv() {
+  if (!intelReport || !intelReport.gscCannibals) return;
+  var rows = [];
+  intelReport.gscCannibals.forEach(function (c) {
+    c.pages.forEach(function (p, i) {
+      rows.push([c.query, c.impressions, i === 0 ? 'consolidate into' : 'competing',
+        p.url, p.position, p.clicks, p.impressions]);
+    });
+  });
+  ns.csv.download('link-lens-query-cannibalization-' + new URL(origin).hostname + '.csv',
+    ns.csv.build(['query', 'query_impressions', 'role', 'url', 'position', 'clicks',
+      'impressions'], rows), document);
+}
 
 function downloadCannibalCsv() {
   if (!intelReport || !intelReport.cannibals) return;
@@ -1025,6 +1118,8 @@ document.addEventListener('DOMContentLoaded', function () {
   $('btn-orphan-csv').addEventListener('click', downloadOrphanCsv);
   $('btn-anchor-csv').addEventListener('click', downloadAnchorCsv);
   $('btn-cannibal-csv').addEventListener('click', downloadCannibalCsv);
+  $('btn-qw-csv').addEventListener('click', downloadQuickWinsCsv);
+  $('btn-gcan-csv').addEventListener('click', downloadGscCannibalCsv);
   $('btn-plan').addEventListener('click', startPlan);
   $('btn-plan-stop').addEventListener('click', function () {
     sendToBackground({ type: 'LL_PLAN_STOP' }).then(refreshPlanStatus);
@@ -1061,6 +1156,8 @@ document.addEventListener('DOMContentLoaded', function () {
     sendToBackground({ type: 'LL_PLAN_STOP' }).then(function () { refreshRun('audit'); });
   });
   $('btn-bulk-csv').addEventListener('click', downloadBulkCsv);
+  $('btn-bulk-ahrefs').addEventListener('click', function () { downloadAhrefs('audit'); });
+  $('btn-plan-ahrefs').addEventListener('click', function () { downloadAhrefs('plan'); });
   $('btn-bulk-reset').addEventListener('click', function () {
     sendToBackground({ type: 'LL_PLAN_CLEAR', mode: 'audit', origin: origin });
     hide($('bulk-done'));

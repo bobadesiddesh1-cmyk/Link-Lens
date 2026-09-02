@@ -364,6 +364,9 @@
       var key = t.siteKey || tok.siteKey(t.url);
       t.siteKey = key;
       if (!key || selfIds.has(key)) continue; // never suggest linking to self
+      // Crawl hygiene (needs a crawl): skip noindex pages and pages that
+      // canonicalise elsewhere — never recommend linking to either.
+      if (t.noindex || t.canonicalTo) continue;
       var groupKey = t.phrase || t.siteKey;
       var g = groups.get(groupKey);
       if (!g) { g = { linkedUrl: null, rep: null }; groups.set(groupKey, g); }

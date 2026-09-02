@@ -74,6 +74,7 @@
       <div class="result-label">link opportunities across the batch</div>
       <div class="result-sub" id="bulk-sub"></div>
       <button id="btn-bulk-csv" class="cta small">⬇ Download combined CSV</button>
+      <button id="btn-bulk-ahrefs" class="ghost">⬇ Ahrefs "Link opportunities" format</button>
       <button id="btn-bulk-reset" class="ghost">Clear results</button>
     </div>
   </section>
@@ -179,11 +180,21 @@
         <span id="cannibal-count">0</span> cannibalization pairs ·
         <span id="buried-count">0</span> buried (4+ clicks deep)
       </div>
+      <div class="status-sub" id="hygiene-line"></div>
       <div id="intel-list" class="bulk-list"></div>
       <button id="btn-orphan-csv" class="cta small">⬇ Orphan + link-equity CSV</button>
       <button id="btn-anchor-csv" class="ghost">⬇ Anchor diversity CSV</button>
       <button id="btn-cannibal-csv" class="ghost hidden">⬇ Cannibalization CSV</button>
       <button id="btn-crawl-clear" class="ghost">Delete crawl data</button>
+
+      <div id="gsc-reports" class="hidden">
+        <div class="report-head">From Search Console</div>
+        <p class="hint"><strong id="qw-count">0</strong> quick wins (ranking #4–#20)
+          · <strong id="gcan-count">0</strong> queries where two of your pages compete.</p>
+        <div id="qw-list" class="bulk-list"></div>
+        <button id="btn-qw-csv" class="cta small">⬇ Quick wins CSV</button>
+        <button id="btn-gcan-csv" class="ghost">⬇ Real cannibalization CSV</button>
+      </div>
 
       <div class="report-head">Site-wide link plan</div>
       <p class="hint">Re-reads each crawled page and writes a complete
@@ -194,6 +205,7 @@
       <button id="btn-plan-stop" class="ghost hidden">Pause plan</button>
       <div id="plan-progress" class="progress hidden"></div>
       <button id="btn-plan-csv" class="cta small hidden">⬇ Download link plan CSV</button>
+      <button id="btn-plan-ahrefs" class="ghost hidden">⬇ Ahrefs "Link opportunities" format</button>
       <div id="plan-error" class="error hidden"></div>
     </div>
   </section>

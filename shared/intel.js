@@ -32,6 +32,15 @@
     };
   }
 
+  /**
+   * Is this a page we may recommend linking TO? Excludes noindex pages and
+   * pages that canonicalise elsewhere — linking to either wastes equity on
+   * a URL Google will not rank, and reads as an error in a deliverable.
+   */
+  function linkable(t) {
+    return !t.noindex && !t.canonicalTo;
+  }
+
   /** Median inbound count — the yardstick for "under-linked". */
   function medianInbound(model, targets) {
     var vals = targets.map(function (t) { return model.inbound[t.siteKey] || 0; });
@@ -60,6 +69,10 @@
       t.inbound = 0;
       t.vec = null;
       t.title = null;
+      // Crawl hygiene: a page Google is told to ignore, or one that
+      // declares a different canonical, must never be a link target.
+      t.noindex = false;
+      t.canonicalTo = null;
       // The keyword map: every URL has ONE primary keyword that anchors
       // should be (or closely vary). Slug by default; the H1/title wins
       // once the page has been crawled because it's what the page is
@@ -71,6 +84,8 @@
         t.inbound = model.inbound[t.siteKey] || 0;
         if (p) {
           t.title = p.t || p.h || null;
+          t.noindex = p.x === 1;
+          t.canonicalTo = p.c || null;
           // Title / H1 phrase — catches targets with useless slugs.
           var head = ts.headingPhrase(p.h || p.t);
           if (head) {
@@ -260,6 +275,7 @@
     for (var i = 0; i < targets.length; i++) {
       var t = targets[i];
       if (!model.pages[t.siteKey]) continue; // not crawled — unknown, not orphan
+      if (!linkable(t)) continue;            // noindex/canonicalised: orphan by design
       if ((model.inbound[t.siteKey] || 0) === 0) {
         out.push({
           url: t.url,
@@ -278,6 +294,7 @@
     for (var i = 0; i < targets.length; i++) {
       var t = targets[i];
       if (!model.pages[t.siteKey]) continue;
+      if (!linkable(t)) continue;
       rows.push({
         url: t.url,
         title: t.title || t.phrase,
@@ -341,7 +358,7 @@
       var hit = ns.gsc.targetForQuery(gsc, stems);
       if (hit) {
         for (var h = 0; h < targets.length; h++) {
-          if (targets[h].siteKey === hit.key) {
+          if (targets[h].siteKey === hit.key && linkable(targets[h])) {
             targets[h].pickedBy = 'gsc';
             targets[h].pickedEvidence = hit;
             return targets[h];
@@ -353,6 +370,7 @@
     var best = null, bestScore = 0;
     for (var i = 0; i < targets.length; i++) {
       var t = targets[i];
+      if (!linkable(t)) continue;
       var phrases = (t.phrases || [{ stems: t.stems || [] }]).slice();
       if (t.primaryStems && t.primaryStems.length) phrases.push({ stems: t.primaryStems });
       var top = 0;
@@ -653,6 +671,7 @@
   }
 
   ns.intel = {
+    linkable: linkable,
     buildModel: buildModel,
     stemCommonness: stemCommonness,
     pickTarget: pickTarget,

@@ -231,7 +231,83 @@
     return { query: best[0], impressions: best[2], position: best[3] };
   }
 
+  /**
+   * REAL cannibalization: two or more URLs ranking for the same query.
+   * The TF-IDF version infers that two pages look alike; this reports
+   * what Google is actually doing, which is what a client acts on.
+   * Only queries with meaningful demand count — a stray impression on a
+   * second URL is noise, not a competing page.
+   */
+  function cannibalQueries(model, opts) {
+    opts = opts || {};
+    var minImpressions = opts.minImpressions || 50;
+    var limit = opts.limit || 100;
+    var byQuery = new Map();
+    var keys = Object.keys((model && model.pages) || {});
+    for (var i = 0; i < keys.length; i++) {
+      var rows = model.pages[keys[i]].q || [];
+      for (var j = 0; j < rows.length; j++) {
+        var q = rows[j][0];
+        var list = byQuery.get(q);
+        if (!list) { list = []; byQuery.set(q, list); }
+        list.push({ key: keys[i], url: model.pages[keys[i]].u,
+                    clicks: rows[j][1], impressions: rows[j][2], position: rows[j][3] });
+      }
+    }
+    var out = [];
+    byQuery.forEach(function (pages, query) {
+      if (pages.length < 2) return;
+      var total = 0;
+      for (var k = 0; k < pages.length; k++) total += pages[k].impressions;
+      if (total < minImpressions) return;
+      pages.sort(function (a, b) {
+        if (b.clicks !== a.clicks) return b.clicks - a.clicks;
+        return a.position - b.position;
+      });
+      out.push({
+        query: query,
+        pages: pages,
+        winner: pages[0],
+        competitors: pages.length - 1,
+        impressions: total,
+        // How evenly the clicks are split: an even split is the worst case,
+        // because neither URL is consolidating the signal.
+        split: pages[0].clicks === 0 ? 1
+          : Math.round((1 - pages[0].clicks / pages.reduce(function (a, p) { return a + p.clicks; }, 0)) * 100)
+      });
+    });
+    out.sort(function (a, b) { return b.impressions - a.impressions; });
+    return out.slice(0, limit);
+  }
+
+  /**
+   * Quick wins: pages ranking just off the top — where an internal link
+   * is the cheapest intervention available. Sorted by the impressions at
+   * stake, because position 8 on 40,000 impressions beats position 5 on 300.
+   */
+  function quickWins(model, opts) {
+    opts = opts || {};
+    var minImpressions = opts.minImpressions || 100;
+    var limit = opts.limit || 100;
+    var out = [];
+    var keys = Object.keys((model && model.pages) || {});
+    for (var i = 0; i < keys.length; i++) {
+      var page = model.pages[keys[i]];
+      var best = strikingDistance(page);
+      if (!best || best.impressions < minImpressions) continue;
+      out.push({
+        key: keys[i], url: page.u, query: best.query,
+        position: best.position, impressions: best.impressions,
+        clicks: page.c
+      });
+    }
+    out.sort(function (a, b) { return b.impressions - a.impressions; });
+    return out.slice(0, limit);
+  }
+
   ns.gsc = {
+    cannibalQueries: cannibalQueries,
+    quickWins: quickWins,
     VERSION: GSC_VERSION,
     MAX_QUERIES_PER_PAGE: MAX_QUERIES_PER_PAGE,
     matchProperty: matchProperty,

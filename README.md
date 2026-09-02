@@ -138,6 +138,10 @@ That model upgrades everything downstream:
 
 - **Click depth** — breadth-first distance from the homepage over editorial
   links; pages 4+ clicks deep (or unreachable) are flagged BURIED.
+- **Crawl hygiene** (2.5.0) — `noindex` pages and pages that canonicalise
+  elsewhere are never suggested as link targets and never counted as orphans;
+  `rel="nofollow"` internal links do not count as inbound. The panel shows how
+  many pages were excluded.
 
 **Site-wide link plan.** The same tab can build the full deliverable: it re-reads
 every crawled page and writes a complete *"add this link, on this page, with this
@@ -150,7 +154,11 @@ Re-fetching is required because placing an anchor needs each page's real
 sentences, which the crawl deliberately does not store.
 
 Extra CSVs ship from this tab: link equity (with an ORPHAN flag) and anchor
-diversity. The whole model lives in `chrome.storage.local` — a 2,000-page crawl
+diversity. Bulk audits and the site plan can also be exported in the **Ahrefs
+Site Audit "Link opportunities" format** — the same 15 columns, order, quoting
+and UTF-16 TAB encoding — so they drop straight into existing workbooks. Columns
+Link Lens cannot know (URL Rating, search volume, keyword difficulty) are left
+blank; `PR` is the internal PageRank and traffic columns are Search Console clicks. The whole model lives in `chrome.storage.local` — a 2,000-page crawl
 is roughly 2–4 MB — and nothing leaves the browser.
 
 ### 4b. Google Search Console (optional)
@@ -177,6 +185,11 @@ everything downstream stops guessing:
   moves the needle: *"ranks #11.3 for 'savings account interest rate' (9,000
   impressions) — a link can push it up"*.
 - **Ranking columns in every CSV**, plus a `#position` badge in the panel.
+- **Quick wins** — pages ranking #4–#20, sorted by the impressions at stake:
+  the list you lead a client meeting with.
+- **Real cannibalization** — queries where two of your URLs compete, with
+  position/clicks for each and the one to consolidate into. This is what Google
+  is actually doing, not a topic-similarity inference.
 
 There is no Link Lens server, so your Search Console data goes straight from Google
 to your browser and stays there. **Disconnect** deletes it and revokes the token.

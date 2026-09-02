@@ -142,6 +142,41 @@ replaces inference with evidence: what the page actually ranks for.
   connection the tool behaves exactly as 2.3.0 did, and the new CSV columns are
   simply blank.
 
+## Crawl hygiene, Ahrefs export, Search Console reports (2.5.0)
+
+- **A noindex page is never a link target.** The crawler now reads
+  `<meta name="robots">` / `googlebot` (`noindex`, `none`) and the target is
+  excluded from suggestions, plans, keyword targeting and the orphan report —
+  linking to it would pass equity to a URL Google will not rank, and it reads as
+  an error in a client deliverable. Same for a page whose `<link rel=canonical>`
+  points elsewhere: the canonical URL is the target, not the duplicate.
+- **`rel="nofollow"` (and `ugc`/`sponsored`) internal links do not count as
+  inbound.** They pass no equity, so treating them as editorial links would hide
+  real orphans. A page-level `nofollow` robots directive drops every link on it.
+- The crawl schema stays at v2: the new per-page fields (`x` noindex flag, `c`
+  canonical key) are additive, so an existing crawl keeps working and simply
+  lacks the hygiene until it is re-run. The panel reports how many pages were
+  excluded so the user can see the rule acting.
+- **Ahrefs "Link opportunities" export is byte-compatible**: same 15 columns in
+  the same order, TAB-separated, every field quoted, CRLF, UTF-16 LE with BOM.
+  The team's saved skill defines that file as the house standard, so an export
+  that matches it drops into existing workbooks without reshaping. Columns we
+  cannot know honestly — URL Rating, search volume, keyword difficulty — are left
+  blank rather than filled with a lookalike number; Ahrefs itself ships blanks.
+  `PR` is Link Lens's own internal PageRank, `Source total traffic` and `Target
+  traffic` are Search Console clicks. The mapping runs in the content script
+  because only that context holds the crawl and GSC models.
+- **Real cannibalization from Search Console** (two URLs on one query) is
+  reported alongside the older TF-IDF inference, not instead of it: the
+  inference still works without GSC. Queries under 50 impressions are ignored —
+  a stray impression on a second URL is noise, not a competing page. The higher-
+  click URL is marked "consolidate into".
+- **Quick wins** are pages in striking distance (3.5–20.5) ranked by impressions
+  at stake, floor 100, because position 8 on 40,000 impressions matters more
+  than position 5 on 300.
+- `crawler.js` had a literal NUL byte as a string separator, which made tools
+  classify it as binary. It is now the `\u0000` escape.
+
 ## Service-worker resilience (2.4.3)
 
 - **No optional chrome API is touched at the worker's top level without a

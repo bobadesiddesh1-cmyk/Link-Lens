@@ -317,6 +317,44 @@
     });
   }
 
+  /**
+   * Plan/audit rows → the Ahrefs Link-opportunities schema.
+   *
+   * Columns we cannot know honestly are left blank rather than filled with
+   * a lookalike number: Search Console reports impressions, not search
+   * volume, and there is no keyword-difficulty equivalent. Ahrefs itself
+   * ships blanks in `Source URL Rating`, so blank is a valid value here.
+   */
+  function ahrefsRows(rows, model) {
+    var auth = model ? ns.intel.authority(model) : null;
+    return rows.map(function (r) {
+      var sourceUrl = r[0];
+      var key = ns.tokenizer.siteKey(sourceUrl);
+      var page = (model && model.pages[key]) || null;
+      var gscPage = lastGsc ? ns.gsc.forPage(lastGsc, key) : null;
+      var pr = auth && auth[key] != null ? Math.round(auth[key] * 100) / 100 : '';
+      return [
+        pr,                                       // 1  PR (Link Lens internal PageRank)
+        sourceUrl,                                // 2  Source page
+        page ? String(!page.c) : '',              // 3  Source is canonical
+        page ? String(page.x === 1) : '',         // 4  Source is noindex
+        '',                                       // 5  Source URL Rating (not available)
+        gscPage ? gscPage.c : '',                 // 6  Source total traffic (GSC clicks)
+        r[1],                                     // 7  Keyword = the anchor text
+        r[12],                                    // 8  Keyword context (verbatim sentence)
+        '',                                       // 9  Link opportunity patch (UI-only)
+        '',                                       // 10 Link opportunity patch status (UI-only)
+        '',                                       // 11 Keyword search volume (not available)
+        '',                                       // 12 Keyword difficulty (not available)
+        r[2],                                     // 13 Target page
+        r[9] == null ? '' : r[9],                 // 14 Target position (GSC)
+        r[10] == null ? '' : r[10]                // 15 Target traffic (GSC clicks)
+      ];
+    }).filter(function (row) {
+      return row[1] && row[12] && row[1] !== row[12]; // never a self-link
+    });
+  }
+
   /* ------------------------------------------------------------------ *
    * Keyword mode — where should this keyword be linked FROM?
    * Fetches site pages (from the index, shallowest first, 1/sec) and
@@ -652,6 +690,12 @@
                 if (d === Infinity || d > 3) buried++;
               }
             });
+            // With Search Console connected, report cannibalization that
+            // Google is ACTUALLY showing (two URLs on one query) rather
+            // than the topic-similarity inference. Quick wins likewise
+            // come straight from real positions.
+            var noindexed = targets.filter(function (t) { return t.noindex; }).length;
+            var canonicalised = targets.filter(function (t) { return t.canonicalTo; }).length;
             sendResponse({
               ok: true,
               coverage: model.coverage,
@@ -659,10 +703,28 @@
               underLinked: under,
               anchorRisks: ns.intel.anchorRisks(model, targets, 100),
               cannibals: ns.intel.cannibalization(model, targets, { limit: 60 }),
+              gscCannibals: lastGsc ? ns.gsc.cannibalQueries(lastGsc, { limit: 100 }) : null,
+              quickWins: lastGsc ? ns.gsc.quickWins(lastGsc, { limit: 100 }) : null,
               buried: buried,
+              noindexed: noindexed,
+              canonicalised: canonicalised,
               hasAuthority: !!auth,
-              hasDepth: !!depths
+              hasDepth: !!depths,
+              hasGsc: !!lastGsc
             });
+          });
+        }).catch(function (err) {
+          sendResponse({ ok: false, error: String(err && err.message || err) });
+        });
+        return true;
+
+      case 'LL_AHREFS_ROWS':
+        // Reshape plan/audit rows into the Ahrefs "Link opportunities"
+        // 15-column schema, filling the source-side columns from the crawl
+        // and Search Console models (which only this context holds).
+        getIndex(false).then(function (index) {
+          return getModel(index).then(function (model) {
+            sendResponse({ ok: true, rows: ahrefsRows(msg.rows || [], model) });
           });
         }).catch(function (err) {
           sendResponse({ ok: false, error: String(err && err.message || err) });
