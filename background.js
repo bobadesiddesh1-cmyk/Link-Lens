@@ -13,12 +13,15 @@
  */
 'use strict';
 
+importScripts('shared/tokenizer.js', 'shared/gsc.js');
+
 try {
   chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true });
 } catch (e) { /* very old Chrome: icon click does nothing */ }
 
 function bulkKey(origin) { return 'll_bulk:' + origin; }
 function crawlKey(origin) { return 'll_crawl:' + origin; }
+function gscKey(origin) { return 'll_gsc:' + origin; }
 var PLAN_PREFIX = { plan: 'll_plan:', audit: 'll_audit:', keywords: 'll_kwsite:' };
 function planKey(mode, origin) { return (PLAN_PREFIX[mode] || PLAN_PREFIX.plan) + origin; }
 
@@ -135,6 +138,183 @@ chrome.alarms.onAlarm.addListener(function (alarm) {
   if (alarm.name === 'll-crawl-watchdog') { resumeIfNeeded(); resumePlanIfNeeded(); }
 });
 chrome.runtime.onStartup.addListener(resumeIfNeeded);
+
+/* ------------------------------------------------------------------ *
+ * Google Search Console
+ *
+ * OAuth runs through chrome.identity, so no token ever passes through a
+ * server of ours (there is no server). The access token stays in
+ * Chrome's own token cache; only the aggregated query→page model is
+ * written to local storage, per origin, and it never leaves the browser.
+ * ------------------------------------------------------------------ */
+
+var GSC_API = 'https://www.googleapis.com/webmasters/v3';
+var GSC_ORIGIN_PERMISSION = { origins: ['https://www.googleapis.com/*'] };
+var GSC_DAYS = 90;
+var GSC_ROWS_PER_CALL = 25000;
+var GSC_MAX_CALLS = 4; // rows arrive click-desc, so the head is what matters
+
+function ll_gscToken(interactive) {
+  return new Promise(function (resolve, reject) {
+    if (!chrome.identity || !chrome.identity.getAuthToken) {
+      reject(new Error('Google sign-in needs Chrome — this browser does not support it.'));
+      return;
+    }
+    // A throw inside the callback would strand this promise forever, so
+    // every path below settles it explicitly.
+    var settled = false;
+    var timer = setTimeout(function () {
+      if (settled) return;
+      settled = true;
+      reject(new Error('Google sign-in did not respond. Check that you are signed in to Chrome.'));
+    }, 120000);
+    try {
+      chrome.identity.getAuthToken({ interactive: !!interactive }, function (token) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        var err = chrome.runtime.lastError;
+        if (err || !token) {
+          reject(new Error((err && err.message) || 'not signed in'));
+          return;
+        }
+        resolve(typeof token === 'string' ? token : token.token);
+      });
+    } catch (e) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      reject(e);
+    }
+  });
+}
+
+/**
+ * Can we reach googleapis.com? The permission is optional and must be
+ * REQUESTED from the side panel, synchronously inside the click that
+ * asks for it — chrome.permissions.request needs a user gesture, and a
+ * service worker never has one. Here we only check.
+ */
+function ll_gscHostPermission() {
+  return new Promise(function (resolve) {
+    try {
+      chrome.permissions.contains(GSC_ORIGIN_PERMISSION, function (has) {
+        void chrome.runtime.lastError;
+        resolve(!!has);
+      });
+    } catch (e) { resolve(false); }
+  });
+}
+
+function ll_gscFetch(token, path, body) {
+  var opts = {
+    method: body ? 'POST' : 'GET',
+    headers: { Authorization: 'Bearer ' + token }
+  };
+  if (body) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  return fetch(GSC_API + path, opts).then(function (res) {
+    if (res.status === 401 || res.status === 403) {
+      return res.text().then(function (t) {
+        var e = new Error(/insufficient|scope/i.test(t)
+          ? 'Google did not grant Search Console access — disconnect and try again.'
+          : 'Google rejected the request (' + res.status + '). Reconnect Search Console.');
+        e.authFailure = true;
+        throw e;
+      });
+    }
+    if (!res.ok) {
+      return res.text().then(function (t) {
+        throw new Error('Search Console API error ' + res.status + ': ' + t.slice(0, 200));
+      });
+    }
+    return res.json();
+  });
+}
+
+/** Retry once with a fresh token: cached tokens expire after an hour. */
+function ll_gscCall(path, body) {
+  return ll_gscToken(false).then(function (token) {
+    return ll_gscFetch(token, path, body).catch(function (err) {
+      if (!err.authFailure) throw err;
+      return new Promise(function (resolve) {
+        chrome.identity.removeCachedAuthToken({ token: token }, resolve);
+      }).then(function () {
+        return ll_gscToken(true).then(function (fresh) {
+          return ll_gscFetch(fresh, path, body);
+        });
+      });
+    });
+  });
+}
+
+function ll_gscDateRange() {
+  // Search Console data lags ~2 days; asking for today returns nothing.
+  var end = new Date(Date.now() - 2 * 86400000);
+  var start = new Date(end.getTime() - GSC_DAYS * 86400000);
+  var iso = function (d) { return d.toISOString().slice(0, 10); };
+  return { startDate: iso(start), endDate: iso(end) };
+}
+
+function ll_gscProgress(origin, status, extra) {
+  var msg = { type: 'LL_GSC_PROGRESS', origin: origin, status: status };
+  if (extra) Object.assign(msg, extra);
+  chrome.runtime.sendMessage(msg, function () { void chrome.runtime.lastError; });
+}
+
+/** Pull query x page rows and fold them into the stored model. */
+function ll_gscSync(origin, property) {
+  var range = ll_gscDateRange();
+  var rows = [];
+  var path = '/sites/' + encodeURIComponent(property) + '/searchAnalytics/query';
+
+  function pull(call) {
+    if (call >= GSC_MAX_CALLS) return Promise.resolve();
+    ll_gscProgress(origin, 'running', { rows: rows.length, call: call + 1 });
+    return ll_gscCall(path, {
+      startDate: range.startDate,
+      endDate: range.endDate,
+      dimensions: ['page', 'query'],
+      rowLimit: GSC_ROWS_PER_CALL,
+      startRow: call * GSC_ROWS_PER_CALL,
+      dataState: 'final'
+    }).then(function (res) {
+      var batch = (res && res.rows) || [];
+      rows = rows.concat(batch);
+      if (batch.length < GSC_ROWS_PER_CALL) return; // last page
+      return pull(call + 1);
+    });
+  }
+
+  return pull(0).then(function () {
+    var model = self.__linkLens.gsc.buildModel(rows, {
+      property: property, startDate: range.startDate, endDate: range.endDate
+    });
+    var obj = {};
+    obj[gscKey(origin)] = model;
+    return chrome.storage.local.set(obj).then(function () {
+      ll_gscProgress(origin, 'done', {
+        pages: model.totals.pages, clicks: model.totals.clicks,
+        impressions: model.totals.impressions, rows: model.totals.rows
+      });
+      return model;
+    });
+  });
+}
+
+function ll_gscSummary(model) {
+  if (!model) return null;
+  return {
+    property: model.property,
+    label: self.__linkLens.gsc.propertyLabel(model.property),
+    updatedAt: model.updatedAt,
+    startDate: model.startDate,
+    endDate: model.endDate,
+    totals: model.totals
+  };
+}
 
 /* ------------------------------------------------------------------ *
  * Messages
@@ -265,6 +445,82 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
 
     case 'LL_CRAWL_CLEAR':
       chrome.storage.local.remove(crawlKey(msg.origin)).then(function () {
+        sendResponse({ ok: true });
+      });
+      return true;
+
+    /* ---- Search Console ---- */
+
+    case 'LL_GSC_STATUS':
+      chrome.storage.local.get(gscKey(msg.origin)).then(function (obj) {
+        sendResponse({ ok: true, gsc: ll_gscSummary(obj[gscKey(msg.origin)] || null) });
+      });
+      return true;
+
+    case 'LL_GSC_CONNECT':
+      ll_gscHostPermission().then(function (granted) {
+        if (!granted) {
+          throw new Error('Access to googleapis.com was not granted — click Connect again and choose Allow.');
+        }
+        return ll_gscToken(true);
+      }).then(function (token) {
+        return ll_gscFetch(token, '/sites');
+      }).then(function (res) {
+        var list = (res && res.siteEntry) || [];
+        var property = msg.property ||
+          self.__linkLens.gsc.matchProperty(list, msg.origin);
+        if (!property) {
+          sendResponse({
+            ok: false,
+            noProperty: true,
+            error: 'None of your Search Console properties cover ' +
+              msg.origin + '. Add and verify it in Search Console first.',
+            properties: list.map(function (p) { return p.siteUrl; })
+          });
+          return null;
+        }
+        return ll_gscSync(msg.origin, property).then(function (model) {
+          sendResponse({ ok: true, gsc: ll_gscSummary(model),
+            properties: list.map(function (p) { return p.siteUrl; }) });
+        });
+      }).catch(function (err) {
+        var m = String(err && err.message || err);
+        ll_gscProgress(msg.origin, 'error', { error: m });
+        sendResponse({ ok: false, error: /not signed in|canceled|cancelled/i.test(m)
+          ? 'Google sign-in was cancelled.' : m });
+      });
+      return true;
+
+    case 'LL_GSC_SYNC':
+      chrome.storage.local.get(gscKey(msg.origin)).then(function (obj) {
+        var stored = obj[gscKey(msg.origin)];
+        var property = msg.property || (stored && stored.property);
+        if (!property) throw new Error('Connect Search Console first.');
+        return ll_gscSync(msg.origin, property).then(function (model) {
+          sendResponse({ ok: true, gsc: ll_gscSummary(model) });
+        });
+      }).catch(function (err) {
+        var m = String(err && err.message || err);
+        ll_gscProgress(msg.origin, 'error', { error: m });
+        sendResponse({ ok: false, error: m });
+      });
+      return true;
+
+    case 'LL_GSC_DISCONNECT':
+      // Drop the stored data first, then hand the token back to Google so
+      // the grant is genuinely revoked rather than just forgotten locally.
+      chrome.storage.local.remove(gscKey(msg.origin)).then(function () {
+        return ll_gscToken(false).catch(function () { return null; });
+      }).then(function (token) {
+        if (!token) return;
+        return fetch('https://accounts.google.com/o/oauth2/revoke?token=' + token)
+          .catch(function () { /* offline: the local cache is still cleared */ })
+          .then(function () {
+            return new Promise(function (r) {
+              chrome.identity.removeCachedAuthToken({ token: token }, r);
+            });
+          });
+      }).then(function () {
         sendResponse({ ok: true });
       });
       return true;

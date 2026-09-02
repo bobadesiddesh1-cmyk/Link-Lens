@@ -101,13 +101,16 @@
         s.score == null ? '' : s.score,
         s.matchType, s.position || 'body',
         s.inbound == null ? '' : s.inbound,
+        s.gscPosition == null ? '' : s.gscPosition,
+        s.gscClicks == null ? '' : s.gscClicks,
         (s.reasons || []).join('; '),
         s.contextSentence
       ];
     });
     var csv = ns.csv.build(
       ['source_url', 'anchor_text', 'target_url', 'target_keyword', 'target_title', 'score',
-        'match_type', 'position', 'target_inbound_links', 'why', 'context_sentence'],
+        'match_type', 'position', 'target_inbound_links', 'target_gsc_position',
+        'target_gsc_clicks', 'why', 'context_sentence'],
       rows
     );
     ns.csv.download('link-lens-' + location.hostname + '.csv', csv, document);
@@ -126,13 +129,27 @@
    * link counts. Returns null when no crawl exists — everything still
    * works, just on slug phrases alone.
    */
+  var lastGsc = null; // Search Console model for this origin, if connected
+
+  function getGsc() {
+    return new Promise(function (resolve) {
+      var key = 'll_gsc:' + ORIGIN;
+      chrome.storage.local.get(key, function (obj) {
+        void chrome.runtime.lastError;
+        resolve((obj && obj[key]) || null);
+      });
+    }).catch(function () { return null; });
+  }
+
   function getModel(index) {
-    return ns.storage.getCrawl(ORIGIN).then(function (crawl) {
-      var model = ns.intel.buildModel(crawl);
-      ns.intel.enrich(index.targets, model);
+    return Promise.all([ns.storage.getCrawl(ORIGIN), getGsc()]).then(function (parts) {
+      var model = ns.intel.buildModel(parts[0]);
+      lastGsc = parts[1];
+      ns.intel.enrich(index.targets, model, lastGsc);
       return model;
     }).catch(function () {
-      ns.intel.enrich(index.targets, null);
+      lastGsc = null;
+      ns.intel.enrich(index.targets, null, null);
       return null;
     });
   }
@@ -310,7 +327,7 @@
   var KEYWORD_PAGE_LIMIT = 20;
 
   function pickTargetForKeyword(index, stems) {
-    return ns.intel.pickTarget(index.targets, stems);
+    return ns.intel.pickTarget(index.targets, stems, lastGsc);
   }
 
   /** "savings account, bank account" → ['savings account', 'bank account'] */
@@ -431,6 +448,7 @@
         return {
           ok: true,
           hasModel: !!model,
+          hasGsc: !!lastGsc,
           keywords: keywords.map(function (keyword) {
             var stems = keywordStems(keyword) || [];
             var targetKey = null, tUrl = null;
@@ -442,7 +460,7 @@
             return {
               keyword: keyword,
               targetUrl: tUrl,
-              variants: ns.intel.keywordVariants(model, keyword, targetKey, 12)
+              variants: ns.intel.keywordVariants(model, keyword, targetKey, 12, lastGsc)
             };
           })
         };

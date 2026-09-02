@@ -540,6 +540,8 @@
         score: rec.score,
         reasons: rec.reasons || [],
         inbound: rec.target.inbound,
+        gscPosition: rec.target.gsc ? rec.target.gsc.position : null,
+        gscClicks: rec.target.gsc ? rec.target.gsc.clicks : null,
         inHeading: rec.inHeading,
         position: positionOf(rec.startIdx, words.length),
         anchorText: sliceAnchor(words, rec.startIdx, rec.endIdx),

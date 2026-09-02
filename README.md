@@ -103,7 +103,8 @@ sweep over the words — well under 400 ms.
 - The Shadow-DOM side panel shows the summary count, all suggestions (click →
   scroll + pulse), the "already linked" list, and **Export CSV**:
   `source_url, anchor_text, target_url, target_keyword, target_title, score,
-  match_type, position, target_inbound_links, reasons, context_sentence`
+  match_type, position, target_inbound_links, target_gsc_position,
+  target_gsc_clicks, why, context_sentence`
   — your client-deliverable (`position` = early / body / deep in the copy).
 
 ### 4. Site intelligence (crawl)
@@ -152,6 +153,32 @@ Extra CSVs ship from this tab: link equity (with an ORPHAN flag) and anchor
 diversity. The whole model lives in `chrome.storage.local` — a 2,000-page crawl
 is roughly 2–4 MB — and nothing leaves the browser.
 
+### 4b. Google Search Console (optional)
+
+Site intel tab → **Connect Google Search Console**. Sign in with Google (read-only
+access, `webmasters.readonly`), Link Lens matches the site you're on to one of your
+properties — URL-prefix or `sc-domain:` — and pulls the last 90 days of
+**query × page** data. Everything downstream stops guessing:
+
+- **Keyword map from evidence.** A URL's primary keyword becomes the query it
+  actually earns clicks for, not its slug or H1. A page titled "Zero Balance
+  Account" that ranks for *savings account* is mapped to *savings account*.
+- **Targets resolved by ranking.** "apply for savings account" links to whichever
+  page Google already ranks for it. When two pages compete for one query,
+  the one with more clicks wins — cannibalization is resolved rather than deepened.
+- **Anchor variations from real searches.** The variation chips lead with actual
+  queries ("savings account interest rate", 9,000 impressions) before falling back
+  to on-site phrasings and templates.
+- **Scoring by opportunity, not just structure.** Pages in *striking distance*
+  (ranking #4–#20) are ranked highest, because that's where an internal link
+  moves the needle: *"ranks #11.3 for 'savings account interest rate' (9,000
+  impressions) — a link can push it up"*.
+- **Ranking columns in every CSV**, plus a `#position` badge in the panel.
+
+There is no Link Lens server, so your Search Console data goes straight from Google
+to your browser and stays there. **Disconnect** deletes it and revokes the token.
+Everything works without it — the ranking columns are simply blank.
+
 ### 5. Keyword mode
 
 Panel → **Keyword** tab: enter one or **more keywords, comma-separated** (and
@@ -188,7 +215,8 @@ combined 11-column CSV**.
 
 ## Why Link Lens needs (almost) no permissions
 
-Declared permissions: `storage`, `activeTab`, `scripting`. **Host permissions: none.**
+Declared permissions: `storage`, `activeTab`, `scripting`, `sidePanel`, `tabs`,
+`offscreen`, `alarms`, `identity`. **Mandatory host permissions: none.**
 
 This is a deliberate design, and it's why the extension sails through review:
 
@@ -197,9 +225,10 @@ This is a deliberate design, and it's why the extension sails through review:
 - The sitemap fetch and all bulk-mode page fetches are performed **from the content
   script running in the page**, so they are **same-origin requests to the site
   you're already on** — no CORS exemptions, no `<all_urls>`, no broad host access.
-- There are **no external requests, ever** — no analytics, no telemetry, no CDN.
-  The only network traffic is your own site's sitemap and (in bulk mode) your own
-  site's pages.
+- There are **no analytics, no telemetry, no CDN, and no server of ours** — the
+  only network traffic is your own site's sitemap and pages, plus Google's
+  Search Console API if you explicitly connect it (read-only, revocable, and
+  `googleapis.com` is an optional permission requested at that moment).
 
 ---
 
@@ -208,7 +237,7 @@ This is a deliberate design, and it's why the extension sails through review:
 ```
 link-lens/
 ├── manifest.json           # MV3; per-site host access granted on first use
-├── background.js           # side panel, offscreen worker lifecycle, run routing
+├── background.js           # side panel, offscreen worker, run routing, GSC OAuth
 ├── crawler/
 │   ├── offscreen.html      # offscreen document (DOMParser lives here)
 │   ├── crawler.js          # sitemap crawl → page profiles + editorial link graph
@@ -228,6 +257,7 @@ link-lens/
 ├── shared/
 │   ├── tokenizer.js        # slug tokenization, stopwords, URL normalization
 │   ├── textstats.js        # TF-IDF, cosine, heading phrases
+│   ├── gsc.js              # Search Console: property match, query→page model
 │   ├── intel.js            # keyword map, scoring, variants, PageRank, reports
 │   ├── storage.js          # per-origin cache, 24 h TTL
 │   └── csv.js              # RFC 4180 escaping + download
@@ -268,6 +298,10 @@ link-lens/
    appear (site-mined first, templates last); "Check the whole site" walks every
    crawled page and the CSV lists one row per keyword per placement, each with its
    own target URL.
+9. **Connect Search Console** → Chrome asks for googleapis.com access, then Google
+   sign-in; the card shows the matched property and 90-day totals. Re-scan a page:
+   suggestions now carry a `#position` badge, ranking reasons, and targets chosen
+   by what actually ranks. **Disconnect** clears the data and revokes the token.
 
 ---
 
@@ -297,6 +331,9 @@ Hugo, custom — anything with a sitemap; shallow fallback if there isn't one)
 and the full context sentence
 
 📦 bulk mode: paste up to 500 URLs and get one combined report
+
+🔗 optional: connect Google Search Console (read-only) to map keywords to the
+pages that already rank for them and prioritise links by real search demand
 
 💡 keyword mode: comma-separated keywords, site-mined anchor variations, and a
 site-wide check of every page that should link your money pages

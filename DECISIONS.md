@@ -92,6 +92,45 @@ Everything else follows the brief verbatim.
   their 8 most distinctive terms and only pages sharing one are compared. Terms
   held by more than 5% of the site are treated as themes, not duplicate signals.
 
+## Google Search Console (2.4.0)
+
+Until now a URL's keyword was *inferred* (slug, then H1). Search Console
+replaces inference with evidence: what the page actually ranks for.
+
+- **chrome.identity, no server.** OAuth runs through Chrome's own token store
+  with a Chrome-Extension OAuth client, so there is no client secret to ship and
+  no backend to route data through. The token never reaches our code beyond the
+  `Authorization` header of the calls it authorises.
+- **Read-only scope only** (`webmasters.readonly`). Nothing is ever written back.
+- **googleapis.com is an OPTIONAL host permission**, requested at Connect time.
+  Adding it to `host_permissions` would have shown every existing user a new
+  permission warning and disabled the extension until they re-approved it — a
+  hard cost for a feature most users may never turn on.
+- **The permission request must happen in the side panel**, synchronously inside
+  the click. `chrome.permissions.request` needs a user gesture and a service
+  worker never has one; requesting from the worker leaves the promise unsettled
+  and the button spinning forever. (Caught by the real-Chrome test, not by
+  reasoning — hence `gsc-live.js`.)
+- **`key` is pinned in the manifest** so a locally loaded build keeps the store
+  extension ID. `getAuthToken` refuses to run when the running ID differs from
+  the OAuth client's Item ID, which makes local testing impossible otherwise.
+- **90 days, page × query, up to 4 pages of 25k rows.** Rows come back sorted by
+  clicks, so the head is what matters; the tail below a page's top ten queries
+  never decides an anchor and would cost storage for nothing.
+- **Only an aggregate is stored** (`ll_gsc:{origin}`): per page, its top 10
+  queries with clicks/impressions/position. Never raw row dumps.
+- **Cannibalization is resolved in favour of Google.** When two pages rank for
+  one query, `targetForQuery` links to the one with more clicks rather than
+  reinforcing the split.
+- **Scoring**: Search Console evidence contributes up to 18 points and the
+  inbound-link heuristic drops to 60% weight when it is present — both measure
+  "does this page need help", and one of them is a proxy while the other is
+  measurement. Striking distance (position 3.5-20.5) is the strongest signal: a
+  page on page 1-2 is where an internal link actually moves the needle.
+- **Degrades cleanly.** Every GSC parameter is optional throughout; with no
+  connection the tool behaves exactly as 2.3.0 did, and the new CSV columns are
+  simply blank.
+
 ## Keyword mapping, precision and site-wide keywords (2.3.0)
 
 Feedback after real use: bulk audits stopped at 20 URLs, the keyword check

@@ -85,6 +85,7 @@
     '.tag.loose { background: #FEF3C7; color: #B45309; }',
     '.tag.partial { background: #E0F2FE; color: #0369A1; }',
     '.tag.early { background: #CCFBF1; color: #0F766E; }',
+    '.tag.gsc { background: #E0E7FF; color: #3730A3; }',
     '.tag.heading { background: #FFEDD5; color: #C2410C; }',
     '.linked { padding: 7px 10px; font-size: 12px; color: #475569; }',
     '.linked .url { font-size: 11px; color: #64748B; word-break: break-all; }',
@@ -178,6 +179,9 @@
           '  <span class="tag ' + s.matchType + '">' + s.matchType + '</span>' +
           (s.inHeading ? '<span class="tag heading">heading</span>' : '') +
           (s.position === 'early' ? '<span class="tag early">early</span>' : '') +
+          (s.gscPosition != null
+            ? '<span class="tag gsc" title="current Search Console position">#' +
+              escapeHtml(String(s.gscPosition)) + '</span>' : '') +
           '  <div class="url">→ ' + escapeHtml(s.url) + '</div>' +
           ((s.keyword && s.keyword.toLowerCase() !== String(s.anchorText).toLowerCase())
             ? '<div class="why">target keyword: ' + escapeHtml(s.keyword) + '</div>' : '') +

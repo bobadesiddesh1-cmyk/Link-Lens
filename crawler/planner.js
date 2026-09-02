@@ -117,6 +117,8 @@
         s.score == null ? '' : s.score,
         s.matchType, s.position || 'body',
         s.inbound == null ? '' : s.inbound,
+        s.gscPosition == null ? '' : s.gscPosition,
+        s.gscClicks == null ? '' : s.gscClicks,
         (s.reasons || []).join('; '),
         s.contextSentence
       ]);
@@ -137,6 +139,8 @@
         var o = res.occurrences[j];
         state.rows.push([
           url, o.anchorText, kw.text, kw.targetUrl || '',
+          kw.rank == null ? '' : kw.rank,
+          kw.impressions == null ? '' : kw.impressions,
           o.position, o.relevance, o.contextSentence
         ]);
         found++;
@@ -188,15 +192,16 @@
 
   /** Load the index + crawl model and enrich targets, once per run. */
   function buildContext(origin, msg) {
-    return Promise.all([get('ll_index:' + origin), get('ll_crawl:' + origin)])
+    return Promise.all([get('ll_index:' + origin), get('ll_crawl:' + origin),
+                        get('ll_gsc:' + origin)])
       .then(function (parts) {
-        var index = parts[0], crawl = parts[1];
+        var index = parts[0], crawl = parts[1], gsc = parts[2];
         if (!index || !index.targets || index.targets.length === 0) {
           throw new Error('No site index yet — run a scan on the site first.');
         }
         var model = ns.intel.buildModel(crawl);
-        ns.intel.enrich(index.targets, model);
-        var c = { targets: index.targets, model: model, perTarget: {}, keywords: [] };
+        ns.intel.enrich(index.targets, model, gsc);
+        var c = { targets: index.targets, model: model, gsc: gsc, perTarget: {}, keywords: [] };
 
         if ((msg.mode || 'plan') === 'keywords') {
           var list = (msg.keywords || []).map(function (s) { return String(s).trim(); })
@@ -209,13 +214,18 @@
             if (msg.targetUrl) {
               target = { url: msg.targetUrl, siteKey: tok.siteKey(msg.targetUrl) };
             } else {
-              var picked = ns.intel.pickTarget(index.targets, stems);
+              var picked = ns.intel.pickTarget(index.targets, stems, gsc);
               if (picked) target = { url: picked.url, siteKey: picked.siteKey };
             }
+            // Search Console, when connected, also tells us where this
+            // keyword currently ranks — the reason to prioritise it.
+            var evidence = gsc && ns.gsc ? ns.gsc.targetForQuery(gsc, stems) : null;
             return {
               text: text, stems: stems,
               targetKey: target ? target.siteKey : null,
-              targetUrl: target ? target.url : null
+              targetUrl: target ? target.url : null,
+              rank: evidence ? evidence.position : null,
+              impressions: evidence ? evidence.impressions : null
             };
           }).filter(function (k) { return k.stems.length > 0; });
           if (c.keywords.length === 0) throw new Error('Keywords contain no usable words.');

@@ -1,6 +1,6 @@
 # Privacy Policy — Link Lens
 
-**Effective date:** July 11, 2026
+**Effective date:** September 2, 2026
 
 Link Lens ("the extension") is a browser extension that finds internal linking
 opportunities on the website you are currently viewing. This policy explains what
@@ -25,6 +25,23 @@ tracking of any kind.**
   button.
 - **CSV export.** Reports you export are generated locally and saved as a download
   by your browser. They are not uploaded anywhere.
+- **Google Search Console (optional, off by default).** If — and only if — you
+  click "Connect Google Search Console", the extension asks you to sign in with
+  Google and grants itself read-only access to Search Console
+  (`webmasters.readonly`). It then reads, for the site you are working on, the
+  search queries and the pages they lead to over the last 90 days, and stores an
+  aggregate of that on your device. This is used to map keywords to the pages
+  that already rank for them and to prioritise link opportunities.
+
+  - The sign-in is handled by Chrome itself; the access token is held in Chrome's
+    own token store, not by us.
+  - The data travels directly from Google to your browser. **There is no Link
+    Lens server**, so it cannot pass through one.
+  - We never read your Search Console data, and it is never shared with anyone.
+  - You can revoke it at any time with the **Disconnect** button, which deletes
+    the stored data and revokes the token with Google. You can also remove access
+    at https://myaccount.google.com/permissions.
+  - Nothing is ever written back to Search Console — the access is read-only.
 
 ## What we do NOT do
 
@@ -34,16 +51,23 @@ tracking of any kind.**
 - We do not use or transfer data for advertising, creditworthiness, or lending
   purposes.
 - The extension makes no network requests to any server other than the website
-  open in your current tab.
+  open in your current tab and, if you explicitly connect it, Google's own
+  Search Console API on your behalf.
 
 ## Permissions
 
 - `activeTab` and `scripting` — used only when you click the extension and press
   Scan, to run the scanner on that one tab.
 - `storage` — used for the local, on-device cache described above.
+- `sidePanel`, `tabs` — to show the panel and follow the tab you are on.
+- `offscreen`, `alarms` — to run an optional site crawl of your own site in the
+  background and resume it if the browser interrupts it.
+- `identity` — used ONLY if you choose to connect Google Search Console. Without
+  that click it is never exercised.
 
-The extension requests no host permissions and runs nothing in the background on
-any website.
+The extension declares no mandatory host permissions. Access to a website, and
+access to `googleapis.com` for Search Console, are optional permissions you grant
+per site, on request, and can revoke at any time.
 
 ## Changes
 

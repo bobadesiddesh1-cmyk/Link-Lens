@@ -47,7 +47,7 @@
    *  - inbound: internal links currently pointing at it
    * Targets without crawl data keep working on their slug phrase alone.
    */
-  function enrich(targets, model) {
+  function enrich(targets, model, gsc) {
     for (var i = 0; i < targets.length; i++) {
       var t = targets[i];
       var phrases = [];
@@ -100,6 +100,36 @@
             if (samePhrase(stems, phrases)) continue;
             phrases.push({ tokens: stems, stems: stems, kind: 'term', weight: 0.75 });
             added++;
+          }
+        }
+      }
+
+      // Search Console outranks every guess: the query a page actually
+      // earns clicks for IS its keyword, whatever the slug or H1 say.
+      t.gsc = null;
+      if (gsc && ns.gsc) {
+        var g = ns.gsc.forPage(gsc, t.siteKey);
+        if (g && g.q.length) {
+          var topQuery = g.q[0];
+          t.gsc = {
+            query: topQuery[0], clicks: topQuery[1],
+            impressions: topQuery[2], position: topQuery[3],
+            totalClicks: g.c, totalImpressions: g.i,
+            striking: ns.gsc.strikingDistance(g)
+          };
+          t.primary = topQuery[0];
+          t.primaryStems = ns.gsc.queryStems(topQuery[0]);
+          t.primarySource = 'gsc';
+          if (!t.phrase) t.phrase = t.primary;
+          // Top queries become match phrases, ahead of slug and title —
+          // they are the words real visitors used to find this page.
+          for (var q = Math.min(3, g.q.length) - 1; q >= 0; q--) {
+            var qStems = ns.gsc.queryStems(g.q[q][0]);
+            if (qStems.length === 0 || samePhrase(qStems, phrases)) continue;
+            phrases.unshift({
+              tokens: tok.tokenizeText(g.q[q][0]), stems: qStems,
+              kind: 'query', weight: 1.15
+            });
           }
         }
       }
@@ -158,12 +188,32 @@
       else if (inbound <= med) { need = 7; }
     }
 
+    // Search Console evidence (0-18). When it's available the inbound-link
+    // heuristic is only a proxy for the same thing, so it yields weight.
+    var gscPts = 0;
+    if (t.gsc) {
+      need = Math.round(need * 0.6);
+      var strike = t.gsc.striking;
+      if (strike) {
+        gscPts += 12;
+        reasons.push('ranks #' + strike.position + ' for "' + strike.query + '" (' +
+          strike.impressions + ' impressions) — a link can push it up');
+      } else if (t.gsc.position > 20.5 && t.gsc.impressions >= 100) {
+        gscPts += 6;
+        reasons.push(t.gsc.impressions + ' impressions but ranks #' +
+          t.gsc.position + ' — needs internal authority');
+      }
+      if (s.phraseKind === 'query') gscPts += 6;
+      gscPts = Math.min(18, gscPts);
+    }
+
     var place = s.position === 'early' ? 10 : (s.position === 'deep' ? 2 : 6);
     if (s.inHeading) place = Math.max(0, place - 5);
 
     var src = 0;
     var kind = s.phraseKind || 'slug';
-    if (kind === 'slug') src = 5;
+    if (kind === 'query') { src = 5; reasons.push('matches a query this page already ranks for'); }
+    else if (kind === 'slug') src = 5;
     else if (kind === 'title') { src = 4; reasons.push('matches target page title'); }
     else { src = 3; reasons.push('matches target page topic'); }
 
@@ -177,7 +227,7 @@
       }
     }
 
-    var total = Math.max(1, Math.min(100, pts + relevance + need + place + src - penalty));
+    var total = Math.max(1, Math.min(100, pts + relevance + need + gscPts + place + src - penalty));
     return { score: total, reasons: reasons, sim: sim };
   }
 
@@ -281,9 +331,25 @@
    * Best link target for a keyword: the index page whose primary keyword
    * / phrases overlap the keyword's stems the most (shallowest wins ties).
    */
-  function pickTarget(targets, keywordStems) {
+  function pickTarget(targets, keywordStems, gsc) {
     var stems = keywordStems.filter(function (s) { return !tok.STOPWORDS.has(s); });
     if (stems.length === 0) return null;
+
+    // Evidence beats inference: if Search Console says a page already
+    // ranks for this exact query, that page is the target. Full stop.
+    if (gsc && ns.gsc) {
+      var hit = ns.gsc.targetForQuery(gsc, stems);
+      if (hit) {
+        for (var h = 0; h < targets.length; h++) {
+          if (targets[h].siteKey === hit.key) {
+            targets[h].pickedBy = 'gsc';
+            targets[h].pickedEvidence = hit;
+            return targets[h];
+          }
+        }
+      }
+    }
+
     var best = null, bestScore = 0;
     for (var i = 0; i < targets.length; i++) {
       var t = targets[i];
@@ -329,7 +395,7 @@
    *             as suggestions since they're not proven on the site
    * Returns [{ text, source, count }], best first, max `limit`.
    */
-  function keywordVariants(model, keyword, targetKey, limit) {
+  function keywordVariants(model, keyword, targetKey, limit, gsc) {
     limit = limit || 12;
     var raw = tok.tokenizeText(keyword).filter(function (w) { return w.length >= 2; });
     var stems = raw.map(tok.stem);
@@ -338,13 +404,23 @@
     var seen = new Set();
     var base = raw.join(' ');
 
-    function add(text, source, count) {
+    function add(text, source, count, meta) {
       var clean = String(text).replace(/\s+/g, ' ').trim();
       var key = clean.toLowerCase();
       if (!clean || key === base || seen.has(key)) return;
       if (tok.tokenizeText(clean).length > 6) return; // anchors stay short
       seen.add(key);
-      out.push({ text: clean, source: source, count: count || 1 });
+      var row = { text: clean, source: source, count: count || 1 };
+      if (meta) { row.impressions = meta.impressions; row.position = meta.position; }
+      out.push(row);
+    }
+
+    // 0. Real search queries this page ranks for — the only source that
+    //    reflects demand rather than what someone already wrote.
+    if (gsc && ns.gsc && targetKey) {
+      ns.gsc.relatedQueries(gsc, targetKey, stems, 8).forEach(function (q) {
+        add(q.text, 'query', q.impressions, q);
+      });
     }
 
     if (model) {
@@ -405,8 +481,8 @@
       add(tpl.replace('{kw}', base), 'template', 0);
     });
 
-    // proven sources first, then related, then templates
-    var order = { anchor: 0, title: 1, related: 2, template: 3 };
+    // evidence first (real queries), then proven on-site phrasing, then templates
+    var order = { query: 0, anchor: 1, title: 2, related: 3, template: 4 };
     out.sort(function (a, b) {
       if (order[a.source] !== order[b.source]) return order[a.source] - order[b.source];
       return b.count - a.count;

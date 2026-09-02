@@ -119,6 +119,20 @@
       Scans then rank opportunities by a 0–100 score instead of guessing from URLs.
       The crawl runs in the background — you can close this panel or browse elsewhere.</p>
 
+    <div id="gsc-card" class="status-card">
+      <div class="status-row"><span class="dot" id="gsc-dot"></span>
+        <span id="gsc-text">Search Console not connected</span></div>
+      <div class="status-sub" id="gsc-sub">Connect to map keywords to the pages
+        that actually rank for them, and to rank opportunities by real demand.</div>
+    </div>
+    <button id="btn-gsc-connect" class="cta secondary">🔗 Connect Google Search Console</button>
+    <div class="row-buttons hidden" id="gsc-actions">
+      <button id="btn-gsc-sync" class="ghost">↻ Refresh data</button>
+      <button id="btn-gsc-disconnect" class="ghost">Disconnect</button>
+    </div>
+    <div id="gsc-progress" class="progress hidden"></div>
+    <div id="gsc-error" class="error hidden"></div>
+
     <div id="intel-status" class="status-card">
       <div class="status-row"><span class="dot" id="crawl-dot"></span>
         <span id="crawl-text">No crawl yet for this site</span></div>
@@ -178,6 +192,7 @@
 
   <script src="../shared/tokenizer.js"></script>
   <script src="../shared/textstats.js"></script>
+  <script src="../shared/gsc.js"></script>
   <script src="../shared/intel.js"></script>
   <script src="../shared/csv.js"></script>
   <script src="popup.js"></script>

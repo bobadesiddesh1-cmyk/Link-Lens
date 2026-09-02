@@ -13,6 +13,7 @@ var ns = self.__linkLens; // tokenizer + csv, loaded by popup.html
 var CONTENT_FILES = [
   'shared/tokenizer.js',
   'shared/textstats.js',
+  'shared/gsc.js',
   'shared/intel.js',
   'shared/storage.js',
   'shared/csv.js',
@@ -315,9 +316,11 @@ function downloadRunCsv(mode) {
   sendToBackground({ type: 'LL_PLAN_ROWS', mode: mode, origin: origin }).then(function (res) {
     if (!res || !res.rows || !res.rows.length) return;
     var header = mode === 'keywords'
-      ? ['page_url', 'suggested_anchor', 'keyword', 'target_url', 'position', 'relevance', 'context_sentence']
+      ? ['page_url', 'suggested_anchor', 'keyword', 'target_url', 'target_gsc_position',
+         'keyword_impressions', 'position', 'relevance', 'context_sentence']
       : ['source_url', 'anchor_text', 'target_url', 'target_keyword', 'target_title', 'score',
-         'match_type', 'position', 'target_inbound_links', 'why', 'context_sentence'];
+         'match_type', 'position', 'target_inbound_links', 'target_gsc_position',
+         'target_gsc_clicks', 'why', 'context_sentence'];
     var name = mode === 'keywords' ? 'keyword-placements' : (mode === 'audit' ? 'bulk-audit' : 'site-plan');
     ns.csv.download('link-lens-' + name + '-' + new URL(origin).hostname + '.csv',
       ns.csv.build(header, res.rows), document);
@@ -467,6 +470,102 @@ function keywordHere() {
   }).catch(function (err) {
     $('btn-kw-here').disabled = false;
     fail($('kw-error'), friendlyError(err));
+  });
+}
+
+/* ------------------------------------------------------------------ *
+ * Search Console
+ * ------------------------------------------------------------------ */
+
+function renderGsc(g) {
+  var dot = $('gsc-dot');
+  if (!g) {
+    dot.className = 'dot';
+    $('gsc-text').textContent = 'Search Console not connected';
+    $('gsc-sub').textContent = 'Connect to map keywords to the pages that actually ' +
+      'rank for them, and to rank opportunities by real demand.';
+    $('btn-gsc-connect').textContent = '🔗 Connect Google Search Console';
+    show($('btn-gsc-connect'));
+    hide($('gsc-actions'));
+    return;
+  }
+  dot.className = 'dot fresh';
+  var t = g.totals || {};
+  $('gsc-text').textContent = 'Search Console — ' + (t.pages || 0) + ' pages with queries';
+  $('gsc-sub').textContent = (g.label || g.property) + ' · ' +
+    (t.clicks || 0).toLocaleString() + ' clicks · ' +
+    (t.impressions || 0).toLocaleString() + ' impressions · ' +
+    g.startDate + ' → ' + g.endDate + ' · synced ' + timeAgo(g.updatedAt);
+  hide($('btn-gsc-connect'));
+  show($('gsc-actions'));
+}
+
+function refreshGsc() {
+  sendToBackground({ type: 'LL_GSC_STATUS', origin: origin }).then(function (res) {
+    renderGsc(res && res.gsc);
+  });
+}
+
+function gscBusy(busy, label) {
+  $('btn-gsc-connect').disabled = busy;
+  $('btn-gsc-sync').disabled = busy;
+  if (busy) {
+    $('gsc-progress').innerHTML = '<span class="spin">◌</span> ' + label;
+    show($('gsc-progress'));
+  } else {
+    hide($('gsc-progress'));
+  }
+}
+
+function connectGsc() {
+  hide($('gsc-error'));
+  // Must run synchronously inside the click: chrome.permissions.request
+  // needs a user gesture, and the service worker never has one. Calling
+  // it when the permission is already held resolves true immediately.
+  chrome.permissions.request({ origins: ['https://www.googleapis.com/*'] }, function (granted) {
+    void chrome.runtime.lastError;
+    if (!granted) {
+      fail($('gsc-error'), 'Link Lens needs access to googleapis.com to read your ' +
+        'Search Console data. Click Connect again and choose Allow.');
+      return;
+    }
+    gscBusy(true, 'Waiting for Google sign-in…');
+    startGscConnect();
+  });
+}
+
+function startGscConnect() {
+  sendToBackground({ type: 'LL_GSC_CONNECT', origin: origin }).then(function (res) {
+    gscBusy(false);
+    if (!res || !res.ok) {
+      var msg = (res && res.error) || 'Could not connect to Search Console.';
+      if (res && res.noProperty && res.properties && res.properties.length) {
+        msg += ' Properties on this account: ' + res.properties.slice(0, 6).join(', ');
+      }
+      fail($('gsc-error'), msg);
+      return;
+    }
+    renderGsc(res.gsc);
+  });
+}
+
+function syncGsc() {
+  hide($('gsc-error'));
+  gscBusy(true, 'Fetching Search Console data…');
+  sendToBackground({ type: 'LL_GSC_SYNC', origin: origin }).then(function (res) {
+    gscBusy(false);
+    if (!res || !res.ok) {
+      fail($('gsc-error'), (res && res.error) || 'Refresh failed.');
+      return;
+    }
+    renderGsc(res.gsc);
+  });
+}
+
+function disconnectGsc() {
+  hide($('gsc-error'));
+  sendToBackground({ type: 'LL_GSC_DISCONNECT', origin: origin }).then(function () {
+    renderGsc(null);
   });
 }
 
@@ -700,6 +799,18 @@ chrome.runtime.onMessage.addListener(function (msg) {
     });
   }
 
+  if (msg.type === 'LL_GSC_PROGRESS' && msg.origin === origin) {
+    if (msg.status === 'running') {
+      gscBusy(true, 'Fetching Search Console data… ' +
+        (msg.rows || 0).toLocaleString() + ' rows');
+    } else if (msg.status === 'error') {
+      gscBusy(false);
+      fail($('gsc-error'), msg.error || 'Search Console request failed.');
+    } else {
+      gscBusy(false);
+    }
+  }
+
   if (msg.type === 'LL_CRAWL_PROGRESS' && msg.origin === origin) {
     renderCrawlStatus({
       status: msg.status, done: msg.done, failed: msg.failed,
@@ -765,6 +876,7 @@ function initPanel() {
     $('bulk-domain').textContent = new URL(origin).hostname;
     refreshCacheStatus();
     restoreBulkState();
+    refreshGsc();
   });
 }
 
@@ -790,6 +902,9 @@ document.addEventListener('DOMContentLoaded', function () {
   $('btn-kw-variants').addEventListener('click', showVariants);
   $('tab-intel').addEventListener('click', function () { switchTab('intel'); });
   $('btn-crawl').addEventListener('click', startCrawl);
+  $('btn-gsc-connect').addEventListener('click', connectGsc);
+  $('btn-gsc-sync').addEventListener('click', syncGsc);
+  $('btn-gsc-disconnect').addEventListener('click', disconnectGsc);
   $('btn-crawl-stop').addEventListener('click', function () {
     sendToBackground({ type: 'LL_CRAWL_STOP' }).then(refreshCrawlStatus);
   });
