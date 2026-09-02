@@ -97,7 +97,7 @@
     if (!lastScan) return;
     var rows = lastScan.suggestions.map(function (s) {
       return [
-        location.href, s.anchorText, s.url, s.title || '',
+        location.href, s.anchorText, s.url, s.keyword || '', s.title || '',
         s.score == null ? '' : s.score,
         s.matchType, s.position || 'body',
         s.inbound == null ? '' : s.inbound,
@@ -106,7 +106,7 @@
       ];
     });
     var csv = ns.csv.build(
-      ['source_url', 'anchor_text', 'target_url', 'target_title', 'score',
+      ['source_url', 'anchor_text', 'target_url', 'target_keyword', 'target_title', 'score',
         'match_type', 'position', 'target_inbound_links', 'why', 'context_sentence'],
       rows
     );
@@ -310,16 +310,18 @@
   var KEYWORD_PAGE_LIMIT = 20;
 
   function pickTargetForKeyword(index, stems) {
-    // Best index target for the keyword = most stem overlap, shallowest.
-    var best = null, bestScore = -1;
-    index.targets.forEach(function (t) {
-      var score = 0;
-      t.stems.forEach(function (st) { if (stems.indexOf(st) !== -1) score++; });
-      if (score > bestScore || (score === bestScore && best && t.depth < best.depth)) {
-        best = t; bestScore = score;
-      }
-    });
-    return bestScore > 0 ? best : null;
+    return ns.intel.pickTarget(index.targets, stems);
+  }
+
+  /** "savings account, bank account" → ['savings account', 'bank account'] */
+  function splitKeywords(raw, list) {
+    var out = [];
+    (Array.isArray(list) ? list : []).concat(String(raw || '').split(/[,\n;]+/))
+      .forEach(function (k) {
+        var t = String(k || '').trim();
+        if (t && out.indexOf(t) === -1) out.push(t);
+      });
+    return out;
   }
 
   function keywordStems(keyword) {
@@ -333,77 +335,118 @@
    * On-page keyword mode: highlight, inline on THIS page, every spot
    * where the keyword could become an internal link to the target.
    */
-  function runKeywordHere(keyword, targetUrl) {
+  function runKeywordHere(keywordRaw, targetUrl, keywordList) {
     return getIndex(false).then(function (index) {
-      var stems = keywordStems(keyword);
-      if (!stems) throw new Error('Keyword has no usable words.');
+      return getModel(index).then(function (model) {
+        var keywords = splitKeywords(keywordRaw, keywordList);
+        if (keywords.length === 0) throw new Error('Enter at least one keyword.');
 
-      var target = null;
-      if (targetUrl) {
-        target = { url: targetUrl, siteKey: ns.tokenizer.siteKey(targetUrl) };
-      } else {
-        var picked = pickTargetForKeyword(index, stems);
-        if (picked) target = { url: picked.url, siteKey: picked.siteKey };
-      }
+        ns.highlighter.clear();
+        ns.card.hide();
 
-      ns.highlighter.clear();
-      ns.card.hide();
+        var suggestions = [];
+        var linked = [];
+        var perKeyword = [];
+        var words = null;
 
-      var res = ns.matcher.keywordScan({
-        doc: document,
-        pageUrl: location.href,
-        stems: stems,
-        targetKey: target ? target.siteKey : null,
-        maxOccurrences: 30,
-        withWords: true
-      });
+        keywords.forEach(function (keyword) {
+          var stems = keywordStems(keyword);
+          if (!stems) return;
+          var target = null;
+          if (targetUrl) {
+            target = { url: targetUrl, siteKey: ns.tokenizer.siteKey(targetUrl) };
+          } else {
+            var picked = pickTargetForKeyword(index, stems);
+            if (picked) target = { url: picked.url, siteKey: picked.siteKey };
+          }
+          var res = ns.matcher.keywordScan({
+            doc: document, pageUrl: location.href, stems: stems,
+            targetKey: target ? target.siteKey : null,
+            maxOccurrences: 30, withWords: true
+          });
+          if (res.words) words = res.words;
+          if (res.alreadyLinked) {
+            linked.push({ url: target.url, phrase: keyword });
+            perKeyword.push({ keyword: keyword, found: 0, alreadyLinked: true, targetUrl: target.url });
+            return;
+          }
+          res.occurrences.forEach(function (o) {
+            suggestions.push({
+              url: target ? target.url : '(no matching target in the site index — set a target URL)',
+              phrase: keyword,
+              keyword: keyword,
+              matchType: o.matchType,
+              inHeading: o.inHeading,
+              position: o.position,
+              anchorText: o.anchorText,
+              contextSentence: o.contextSentence,
+              startIdx: o.startIdx,
+              endIdx: o.endIdx
+            });
+          });
+          perKeyword.push({
+            keyword: keyword, found: res.occurrences.length, alreadyLinked: false,
+            targetUrl: target ? target.url : null, wordCount: res.wordCount
+          });
+        });
 
-      if (res.alreadyLinked) {
-        return {
-          ok: true, found: 0, alreadyLinked: true,
-          targetUrl: target ? target.url : null
+        // document order, so the panel reads top-to-bottom
+        suggestions.sort(function (a, b) { return a.startIdx - b.startIdx; });
+
+        lastScan = {
+          suggestions: suggestions,
+          alreadyLinked: linked,
+          capped: false,
+          indexInfo: {
+            shallow: index.shallow, skippedGz: 0, capped: false,
+            source: 'keywords: ' + keywords.join(', '),
+            builtAt: index.builtAt, targetCount: index.targets.length
+          },
+          diagnosis: suggestions.length === 0
+            ? (linked.length === keywords.length
+              ? 'This page already links every target for: ' + keywords.join(', ') + '.'
+              : 'None of the keywords appear in this page\'s copy outside existing links.')
+            : null
         };
-      }
 
-      var suggestions = res.occurrences.map(function (o) {
+        if (words) ns.highlighter.apply(suggestions, words, onHighlightClick);
+        renderPanel();
+
         return {
-          url: target ? target.url : '(no matching target in the site index — set a target URL)',
-          phrase: keyword,
-          matchType: o.matchType,
-          inHeading: o.inHeading,
-          position: o.position,
-          anchorText: o.anchorText,
-          contextSentence: o.contextSentence,
-          startIdx: o.startIdx,
-          endIdx: o.endIdx
+          ok: true,
+          found: suggestions.length,
+          alreadyLinked: linked.length > 0 && suggestions.length === 0,
+          keywords: perKeyword,
+          targetUrl: perKeyword.length === 1 ? perKeyword[0].targetUrl : null
         };
       });
+    });
+  }
 
-      lastScan = {
-        suggestions: suggestions,
-        alreadyLinked: [],
-        capped: false,
-        indexInfo: {
-          shallow: index.shallow, skippedGz: 0, capped: false,
-          source: 'keyword: "' + keyword + '"',
-          builtAt: index.builtAt, targetCount: index.targets.length
-        },
-        diagnosis: suggestions.length === 0
-          ? 'The keyword "' + keyword + '" does not appear in this page\'s copy (' +
-            res.wordCount + ' words scanned) outside existing links.'
-          : null
-      };
-
-      ns.highlighter.apply(suggestions, res.words, onHighlightClick);
-      renderPanel();
-
-      return {
-        ok: true,
-        found: suggestions.length,
-        alreadyLinked: false,
-        targetUrl: target ? target.url : null,
-        wordCount: res.wordCount
-      };
+  /** Keyword variations, mined from the crawl model (templates without one). */
+  function keywordVariants(keywordRaw, keywordList, targetUrl) {
+    return getIndex(false).then(function (index) {
+      return getModel(index).then(function (model) {
+        var keywords = splitKeywords(keywordRaw, keywordList);
+        return {
+          ok: true,
+          hasModel: !!model,
+          keywords: keywords.map(function (keyword) {
+            var stems = keywordStems(keyword) || [];
+            var targetKey = null, tUrl = null;
+            if (targetUrl) { targetKey = ns.tokenizer.siteKey(targetUrl); tUrl = targetUrl; }
+            else {
+              var picked = pickTargetForKeyword(index, stems);
+              if (picked) { targetKey = picked.siteKey; tUrl = picked.url; }
+            }
+            return {
+              keyword: keyword,
+              targetUrl: tUrl,
+              variants: ns.intel.keywordVariants(model, keyword, targetKey, 12)
+            };
+          })
+        };
+      });
     });
   }
 
@@ -622,8 +665,16 @@
         });
         return true;
 
+      case 'LL_KEYWORD_VARIANTS':
+        keywordVariants(msg.keyword || '', msg.keywords, msg.targetUrl || null).then(function (r) {
+          sendResponse(r);
+        }).catch(function (err) {
+          sendResponse({ ok: false, error: String(err && err.message || err) });
+        });
+        return true;
+
       case 'LL_KEYWORD_HERE':
-        runKeywordHere(msg.keyword || '', msg.targetUrl || null).then(function (r) {
+        runKeywordHere(msg.keyword || '', msg.targetUrl || null, msg.keywords).then(function (r) {
           sendResponse(r);
         }).catch(function (err) {
           sendResponse({ ok: false, error: String(err && err.message || err) });

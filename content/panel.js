@@ -179,6 +179,8 @@
           (s.inHeading ? '<span class="tag heading">heading</span>' : '') +
           (s.position === 'early' ? '<span class="tag early">early</span>' : '') +
           '  <div class="url">→ ' + escapeHtml(s.url) + '</div>' +
+          ((s.keyword && s.keyword.toLowerCase() !== String(s.anchorText).toLowerCase())
+            ? '<div class="why">target keyword: ' + escapeHtml(s.keyword) + '</div>' : '') +
           ((s.reasons && s.reasons.length)
             ? '<div class="why">' + escapeHtml(s.reasons.join(' · ')) + '</div>' : '') +
           '</div>';

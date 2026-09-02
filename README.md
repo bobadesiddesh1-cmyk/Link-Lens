@@ -77,8 +77,17 @@ has a **Rebuild index** button to refresh it on demand.
 - Locale-duplicate sitemap entries (`/zh-cn/post` next to `/post`) collapse into
   the original; generic single-word pages (`/about/`, `/contact/`) are never
   suggested; one suggestion per anchor phrase and per text span.
-- Capped at **30 suggestions**, ranked exact > loose > partial, then shallower
-  target depth first.
+- **Precision rules** (2.3.0): single-word targets need a specific 4+ letter word
+  that fewer than 30% of the site's pages contain; loose matches must sit within
+  5 words and partials within 4; anchors never start or end on a stopword; once
+  20+ pages are crawled, a non-exact match between two pages that share no topical
+  vocabulary is dropped as coincidence.
+- **Keyword map:** every target URL has one **primary keyword** — its slug phrase,
+  replaced by its H1/title once crawled — shown on each suggestion ("target
+  keyword: …") and exported as `target_keyword`, so anchors say (or closely vary)
+  what the URL is actually optimized for.
+- Capped at **30 suggestions**, ranked by score (with a crawl) or exact > loose >
+  partial, then shallower target depth first.
 
 **Performance:** target token sets are precompiled into an inverted index
 (first token → candidate targets), so a 2,000-target × 5,000-word page is a single
@@ -93,7 +102,8 @@ sweep over the words — well under 400 ms.
   match type, and a copy-ready `<a href="URL">anchor</a>` snippet with a Copy button.
 - The Shadow-DOM side panel shows the summary count, all suggestions (click →
   scroll + pulse), the "already linked" list, and **Export CSV**:
-  `source_url, anchor_text, target_url, match_type, position, context_sentence`
+  `source_url, anchor_text, target_url, target_keyword, target_title, score,
+  match_type, position, target_inbound_links, reasons, context_sentence`
   — your client-deliverable (`position` = early / body / deep in the copy).
 
 ### 4. Site intelligence (crawl)
@@ -144,20 +154,35 @@ is roughly 2–4 MB — and nothing leaves the browser.
 
 ### 5. Keyword mode
 
-Popup → **Keyword** tab: enter a target keyword (and optionally the URL it should
-link to — otherwise the best-matching page is auto-picked from the site index).
-Link Lens fetches up to 20 pages of the site (shallowest first, 1 request/sec),
-and lists every page that **mentions the keyword but doesn't link the target yet**
-— with suggested anchor, placement position, and context, exported as CSV. This is
-the "where should I add links to my money page?" workflow.
+Panel → **Keyword** tab: enter one or **more keywords, comma-separated** (and
+optionally the URL they should link to — otherwise the best-matching page is
+auto-picked **per keyword** from the site index, using each page's primary
+keyword). Three things you can do with them:
+
+- **💡 Suggest keyword variations** — an intelligence layer that proposes anchor
+  variations for each keyword, mined from your own site: anchors already used for
+  the target, page titles containing the keyword ("Apply for Savings Account
+  Online"), related titles sharing a stem ("current account"), and clearly
+  labelled intent templates ("apply for savings account", "savings account
+  online", "savings account eligibility"). Click a chip to add it to the list.
+- **🔦 Highlight on the current page** — every spot on this page that mentions
+  any of the keywords and doesn't link its target yet, colour-highlighted inline.
+- **Check the whole site** — runs in the background over **every crawled page**
+  (falls back to the index; up to 2,000 pages, resumable) and lists every page
+  that **mentions a keyword but doesn't link the target yet** — with suggested
+  anchor, placement, relevance and context, as one CSV. This is the "where should
+  I add links to my money pages?" workflow.
 
 ### 6. Bulk mode
 
-Popup → **Bulk audit** tab: paste up to **20 URLs of the same domain**. Each page is
-fetched same-origin **from the content script of the active tab**, parsed off-DOM
-with `DOMParser`, and run through the same matcher. Progress streams into the popup,
-fetches are rate-limited to **1/second**, per-URL failures (404s, timeouts) are noted
-without aborting the batch, and the result is **one combined CSV**.
+Panel → **Bulk audit** tab: paste up to **500 URLs of the same domain**. The batch
+runs in the background worker (same engine as the site-wide plan), fetching
+same-origin at the speed set on the Site intel tab, parsing off-DOM with
+`DOMParser` and running the full scorer. Every opportunity on every page is
+reported — no per-page or per-target caps, because an audit is not a plan. You can
+close the panel and come back; the run is persisted and resumable. Per-URL failures
+(404s, timeouts) are counted without aborting the batch, and the result is **one
+combined 11-column CSV**.
 
 ---
 
@@ -182,8 +207,12 @@ This is a deliberate design, and it's why the extension sails through review:
 
 ```
 link-lens/
-├── manifest.json           # MV3, storage + activeTab + scripting only
-├── background.js           # bulk-run persistence (popup can close mid-batch)
+├── manifest.json           # MV3; per-site host access granted on first use
+├── background.js           # side panel, offscreen worker lifecycle, run routing
+├── crawler/
+│   ├── offscreen.html      # offscreen document (DOMParser lives here)
+│   ├── crawler.js          # sitemap crawl → page profiles + editorial link graph
+│   └── planner.js          # background engine: plan / audit / keywords modes
 ├── content/
 │   ├── sitemap.js          # fallback chain, index recursion, caps
 │   ├── indexer.js          # slug → phrase targets, shallow mode
@@ -191,13 +220,15 @@ link-lens/
 │   ├── highlighter.js      # non-destructive wrap + exact-restore registry
 │   ├── card.js             # Shadow DOM suggestion card + copy snippet
 │   ├── panel.js            # Shadow DOM side panel + CSV export
-│   └── main.js             # in-tab orchestrator + bulk runner
+│   └── main.js             # in-tab orchestrator (scan, keyword-here, reports)
 ├── popup/
-│   ├── popup.html          # scan tab + bulk tab
+│   ├── popup.html          # side panel: scan / bulk / keyword / site intel
 │   ├── popup.css
 │   └── popup.js
 ├── shared/
 │   ├── tokenizer.js        # slug tokenization, stopwords, URL normalization
+│   ├── textstats.js        # TF-IDF, cosine, heading phrases
+│   ├── intel.js            # keyword map, scoring, variants, PageRank, reports
 │   ├── storage.js          # per-origin cache, 24 h TTL
 │   └── csv.js              # RFC 4180 escaping + download
 ├── icons/                  # generated by make_icons.py (committed)
@@ -229,9 +260,14 @@ link-lens/
    and removes every wrapper — the DOM (including text-node boundaries) is
    byte-identical to the original. Verify with a `MutationObserver` or by diffing
    `document.body.innerHTML` before scan and after Clear.
-7. **Bulk: 5 URLs pasted** → progress streams one row per second; if one URL 404s,
-   its row shows ✕ with the error and the batch continues; the combined CSV
-   contains per-URL rows for the other four.
+7. **Bulk: 5 URLs pasted** → the background run reports progress in the panel; if
+   one URL 404s it is counted as failed and the batch continues; the combined CSV
+   contains per-URL rows for the other four. Close and reopen the panel mid-run:
+   progress is restored.
+8. **Keyword: "savings account, apply for savings account"** → variations chips
+   appear (site-mined first, templates last); "Check the whole site" walks every
+   crawled page and the CSV lists one row per keyword per placement, each with its
+   own target URL.
 
 ---
 
@@ -260,7 +296,10 @@ Hugo, custom — anything with a sitemap; shallow fallback if there isn't one)
 📊 exports a client-ready CSV: source URL, anchor text, target URL, match type,
 and the full context sentence
 
-📦 bulk mode: paste up to 20 URLs and get one combined report
+📦 bulk mode: paste up to 500 URLs and get one combined report
+
+💡 keyword mode: comma-separated keywords, site-mined anchor variations, and a
+site-wide check of every page that should link your money pages
 
 Privacy: 100% local analysis. Link Lens fetches only your own site's sitemap and
 pages, requires no host permissions, and sends nothing anywhere. No account. No

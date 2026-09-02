@@ -92,6 +92,50 @@ Everything else follows the brief verbatim.
   their 8 most distinctive terms and only pages sharing one are compared. Terms
   held by more than 5% of the site are treated as themes, not duplicate signals.
 
+## Keyword mapping, precision and site-wide keywords (2.3.0)
+
+Feedback after real use: bulk audits stopped at 20 URLs, the keyword check
+only looked at 20 pages, and anchor → URL mapping was too loose.
+
+- **Every target carries one primary keyword** (`target.primary`): the slug
+  phrase by default, replaced by the page's H1/title once crawled (minus the site
+  name and edge stopwords, ≤6 words). That is the keyword the URL is optimized
+  for, so it is what anchors should say or closely vary. It is shown on every
+  suggestion ("target keyword: …") and exported as `target_keyword`.
+- **Precision rules in the matcher**: single-word targets need a 4+ letter word
+  that fewer than 30% of crawled pages contain (kills "account" → random URL on a
+  bank site); loose matches must sit within 5 words (`spread ≤ 4`), partials
+  within 4 and require the head keyword; anchors never start or end on a
+  stopword; with ≥20 crawled pages, a non-exact match whose two pages share no
+  topical vocabulary (cosine < 0.02) is dropped as coincidence.
+- **Keyword → target picking** (`intel.pickTarget`) scores every target's
+  phrases *and* its primary keyword by stem overlap (hits + coverage of the
+  keyword + coverage of the phrase), so "apply for savings account" resolves to
+  `/savings-account/apply` while "savings account" resolves to the parent page.
+  Nothing is guessed when the best score is below 1.
+- **Keyword variations** (`intel.keywordVariants`) are mined from the site,
+  not invented: anchors already used for the target (minus "read more"-style
+  junk), titles/H1s containing the keyword, related titles sharing a stem, and
+  finally intent templates ("apply for {kw}", "{kw} online", "{kw} eligibility"
+  …) that are labelled as unproven suggestions. Proven sources sort first;
+  anchors longer than 6 words are dropped.
+- **Bulk audit moved to the background worker** (planner mode `audit`): up to
+  500 URLs, persisted and resumable, every opportunity per page reported (no
+  per-page/per-target caps — an audit is not a plan). The old 20-URL cap was a
+  politeness limit of the in-tab implementation, which died when the tab
+  navigated; it was never a product decision.
+- **Site-wide keyword check moved to the same worker** (mode `keywords`): checks
+  every crawled page (falls back to the index; up to 2,000) for one or more
+  comma-separated keywords, each with its own auto-picked or user-given target.
+  Rows: `page_url, suggested_anchor, keyword, target_url, position, relevance,
+  context_sentence`.
+- The three modes keep separate storage keys (`ll_plan:`, `ll_audit:`,
+  `ll_kwsite:`) so a bulk audit never overwrites a site plan. `maxPerTarget` for
+  audits is a large finite number — `Infinity` becomes `null` in storage and
+  would have blocked every link after a resume.
+- Legacy in-tab bulk/keyword handlers (`LL_BULK_START`, `LL_KEYWORD_START`)
+  remain in `content/main.js` for programmatic use; the panel no longer calls them.
+
 ## Matching engine v2 (1.1.0)
 
 v1 matched exact word forms only, required every slug token, keyed the inverted
@@ -135,8 +179,9 @@ against live blog.cloudflare.com and css-tricks.com articles):
 
 ## Bulk mode
 
-- Max 20 URLs enforced in the popup; off-domain URLs are rejected before the run
-  starts with a visible error rather than silently dropped.
+- Max 500 URLs enforced in the popup (was 20 when the batch ran inside the tab —
+  see 2.3.0 above); off-domain URLs are rejected before the run starts with a
+  visible error rather than silently dropped.
 - Per-URL failures (404, network, timeout, non-HTML content-type) are recorded as a
   `failures` list and shown in the popup + appended to the CSV as comment-free extra
   columns? **No** — failures are NOT written into the CSV (it's a client deliverable);

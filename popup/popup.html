@@ -54,20 +54,20 @@
 
   <!-- ============ BULK TAB ============ -->
   <section id="view-bulk" class="view">
-    <p class="hint">Paste up to <strong>20 URLs</strong> from
-      <strong id="bulk-domain">this domain</strong> (one per line).
-      Each page is fetched politely (1/sec) and matched against the site index.
-      Keep this tab open on the site while the batch runs.</p>
+    <p class="hint">Paste up to <strong>500 URLs</strong> from
+      <strong id="bulk-domain">this domain</strong> (one per line). Pages are fetched
+      in the background at the speed set on the Site intel tab — you can close this
+      panel and come back; the run is resumable. Every opportunity on every page is
+      reported (no caps — this is an audit, not a plan).</p>
 
     <textarea id="bulk-urls" rows="6" spellcheck="false"
       placeholder="https://example.com/blog/post-one&#10;https://example.com/blog/post-two"></textarea>
 
     <button id="btn-bulk" class="cta">Run bulk audit</button>
-    <button id="btn-bulk-cancel" class="ghost hidden">Stop batch</button>
+    <button id="btn-bulk-cancel" class="ghost hidden">Pause batch</button>
 
     <div id="bulk-error" class="error hidden"></div>
-
-    <div id="bulk-progress" class="bulk-list hidden"></div>
+    <div id="bulk-progress" class="progress hidden"></div>
 
     <div id="bulk-done" class="result hidden">
       <div class="result-num" id="bulk-count">0</div>
@@ -80,16 +80,20 @@
 
   <!-- ============ KEYWORD TAB ============ -->
   <section id="view-kw" class="view">
-    <p class="hint">Enter a <strong>target keyword</strong> — Link Lens checks up to 20 pages
-      of this site (shallowest first, fetched politely at 1/sec) and lists every page that
-      mentions it but doesn't link to it yet. Keep this tab open on the site while it runs.</p>
+    <p class="hint">Enter one or more <strong>target keywords</strong>, comma-separated.
+      Highlight them on this page, or check <strong>every page on the site</strong> for
+      places that mention a keyword but don't link its target yet.</p>
 
-    <input id="kw-keyword" type="text" class="text-input" placeholder="keyword, e.g. recurring deposit" spellcheck="false">
-    <input id="kw-target" type="text" class="text-input" placeholder="target URL (optional — auto-picked from the site index)" spellcheck="false">
+    <textarea id="kw-keyword" rows="2" class="text-input" spellcheck="false"
+      placeholder="savings account, apply for savings account, bank account"></textarea>
+    <input id="kw-target" type="text" class="text-input" placeholder="target URL (optional — auto-picked per keyword from the site index)" spellcheck="false">
 
-    <button id="btn-kw-here" class="cta">🔦 Highlight this keyword on the current page</button>
-    <button id="btn-kw" class="cta secondary">Find pages site-wide that should link it</button>
-    <button id="btn-kw-cancel" class="ghost hidden">Stop</button>
+    <button id="btn-kw-variants" class="ghost">💡 Suggest keyword variations</button>
+    <div id="kw-variants" class="chips hidden"></div>
+
+    <button id="btn-kw-here" class="cta">🔦 Highlight these keywords on the current page</button>
+    <button id="btn-kw" class="cta secondary">Check the whole site for link placements</button>
+    <button id="btn-kw-cancel" class="ghost hidden">Pause site check</button>
 
     <div id="kw-here-result" class="result hidden">
       <div class="result-num" id="kw-here-count">0</div>
@@ -98,7 +102,7 @@
     </div>
 
     <div id="kw-error" class="error hidden"></div>
-    <div id="kw-progress" class="bulk-list hidden"></div>
+    <div id="kw-progress" class="progress hidden"></div>
 
     <div id="kw-done" class="result hidden">
       <div class="result-num" id="kw-count">0</div>

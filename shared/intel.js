@@ -60,6 +60,11 @@
       t.inbound = 0;
       t.vec = null;
       t.title = null;
+      // The keyword map: every URL has ONE primary keyword that anchors
+      // should be (or closely vary). Slug by default; the H1/title wins
+      // once the page has been crawled because it's what the page is
+      // actually optimized for.
+      t.primary = t.phrase || '';
 
       if (model) {
         var p = model.pages[t.siteKey];
@@ -68,10 +73,20 @@
           t.title = p.t || p.h || null;
           // Title / H1 phrase — catches targets with useless slugs.
           var head = ts.headingPhrase(p.h || p.t);
-          if (head && !samePhrase(head.stems, phrases)) {
-            phrases.push({ tokens: head.tokens, stems: head.stems, kind: 'title', weight: 0.9 });
+          if (head) {
+            // Primary keyword = the heading as written (minus the site
+            // name and edge stopwords), e.g. "apply for savings account
+            // online". Matching phrases drop weak words; the keyword map
+            // keeps them because "apply" IS the intent of that page.
+            t.primary = headingKeyword(p.h || p.t) || head.tokens.join(' ');
+            t.primaryStems = tok.tokenizeText(t.primary)
+              .filter(function (w) { return !tok.STOPWORDS.has(w); }).map(tok.stem);
+            if (!samePhrase(head.stems, phrases)) {
+              // Title phrase outranks the slug phrase for matching.
+              phrases.unshift({ tokens: head.tokens, stems: head.stems, kind: 'title', weight: 1 });
+            }
             // Slug gave nothing (/p/1234/) — the title becomes its identity.
-            if (!t.phrase) t.phrase = head.tokens.join(' ');
+            if (!t.phrase) t.phrase = t.primary;
           }
           // Top distinctive bigrams from the page's own copy.
           var terms = p.k || [];
@@ -91,6 +106,17 @@
       t.phrases = phrases;
     }
     return targets;
+  }
+
+  /** Heading text → keyword: first segment before " | " etc., ≤6 words, no edge stopwords. */
+  function headingKeyword(text) {
+    if (!text) return '';
+    var head = String(text).split(/\s[|–—:·]\s/)[0];
+    var words = tok.tokenizeText(head).filter(function (w) { return !/^[0-9]+$/.test(w); });
+    while (words.length && tok.STOPWORDS.has(words[0])) words.shift();
+    while (words.length && tok.STOPWORDS.has(words[words.length - 1])) words.pop();
+    if (words.length > 6) words = words.slice(0, 6);
+    return words.length >= 2 ? words.join(' ') : '';
   }
 
   function samePhrase(stems, phrases) {
@@ -115,8 +141,9 @@
     reasons.push(s.matchType + ' match');
 
     var relevance = 0;
+    var sim = null;
     if (model && t.vec && opts.pageVec) {
-      var sim = ts.cosine(opts.pageVec, t.vec);
+      sim = ts.cosine(opts.pageVec, t.vec);
       relevance = Math.round(Math.min(1, sim * 3) * 25); // sims are small; scale
       if (relevance >= 15) reasons.push('strong topical overlap');
       else if (relevance >= 7) reasons.push('related topic');
@@ -151,7 +178,7 @@
     }
 
     var total = Math.max(1, Math.min(100, pts + relevance + need + place + src - penalty));
-    return { score: total, reasons: reasons };
+    return { score: total, reasons: reasons, sim: sim };
   }
 
   /** How dominant is one anchor among a target's existing inbound anchors? */
@@ -238,6 +265,153 @@
     }
     rows.sort(function (a, b) { return b.uses - a.uses; });
     return rows.slice(0, limit || 100);
+  }
+
+  /**
+   * How common a single word is across the crawled site (0..1). Used to
+   * refuse single-word anchors like "offered" or "account" that appear on
+   * most pages — those map to a URL by accident, not by topic.
+   */
+  function stemCommonness(model, stem) {
+    if (!model || !model.df || !model.totalDocs) return 0;
+    return (model.df[stem] || 0) / model.totalDocs;
+  }
+
+  /**
+   * Best link target for a keyword: the index page whose primary keyword
+   * / phrases overlap the keyword's stems the most (shallowest wins ties).
+   */
+  function pickTarget(targets, keywordStems) {
+    var stems = keywordStems.filter(function (s) { return !tok.STOPWORDS.has(s); });
+    if (stems.length === 0) return null;
+    var best = null, bestScore = 0;
+    for (var i = 0; i < targets.length; i++) {
+      var t = targets[i];
+      var phrases = (t.phrases || [{ stems: t.stems || [] }]).slice();
+      if (t.primaryStems && t.primaryStems.length) phrases.push({ stems: t.primaryStems });
+      var top = 0;
+      for (var p = 0; p < phrases.length; p++) {
+        var hit = 0;
+        var ps = phrases[p].stems || [];
+        for (var s = 0; s < ps.length; s++) if (stems.indexOf(ps[s]) !== -1) hit++;
+        // reward full coverage of the keyword AND of the phrase
+        var cover = stems.length ? hit / stems.length : 0;
+        var tight = ps.length ? hit / ps.length : 0;
+        var sc = hit + cover + tight;
+        if (sc > top) top = sc;
+      }
+      if (top > bestScore || (top === bestScore && best && top > 0 && t.depth < best.depth)) {
+        best = t; bestScore = top;
+      }
+    }
+    return bestScore >= 1 ? best : null;
+  }
+
+  /* ------------------------------------------------------------------ *
+   * Keyword variations
+   * ------------------------------------------------------------------ */
+
+  var INTENT_TEMPLATES = [
+    'apply for {kw}', 'open {kw}', '{kw} online', 'how to open {kw}',
+    '{kw} eligibility', '{kw} benefits', '{kw} interest rate', 'best {kw}',
+    '{kw} charges', '{kw} requirements', 'compare {kw}', '{kw} guide'
+  ];
+
+  /**
+   * Suggest anchor-text variations for a keyword, mined from the site
+   * itself where possible:
+   *   title   — phrases from crawled page titles/H1s that contain the
+   *             keyword (or most of it): "Apply for Savings Account Online"
+   *   anchor  — anchor texts already used site-wide for the target page
+   *   related — other multi-word titles sharing a keyword stem
+   *             ("bank account", "savings account types")
+   *   template— intent phrasings ("apply for savings account") — marked
+   *             as suggestions since they're not proven on the site
+   * Returns [{ text, source, count }], best first, max `limit`.
+   */
+  function keywordVariants(model, keyword, targetKey, limit) {
+    limit = limit || 12;
+    var raw = tok.tokenizeText(keyword).filter(function (w) { return w.length >= 2; });
+    var stems = raw.map(tok.stem);
+    var need = stems.length;
+    var out = [];
+    var seen = new Set();
+    var base = raw.join(' ');
+
+    function add(text, source, count) {
+      var clean = String(text).replace(/\s+/g, ' ').trim();
+      var key = clean.toLowerCase();
+      if (!clean || key === base || seen.has(key)) return;
+      if (tok.tokenizeText(clean).length > 6) return; // anchors stay short
+      seen.add(key);
+      out.push({ text: clean, source: source, count: count || 1 });
+    }
+
+    if (model) {
+      // 1. Anchors already used for the target — proven phrasing.
+      if (targetKey && model.anchors && model.anchors[targetKey]) {
+        model.anchors[targetKey].forEach(function (a) {
+          if (/^(read more|click here|here|learn more|this|link)$/i.test(a[0])) return;
+          add(a[0], 'anchor', a[1]);
+        });
+      }
+
+      // 2. Titles / H1s across the site that contain the keyword, or
+      //    share most of its stems.
+      var titleHits = {};
+      Object.keys(model.pages).forEach(function (k) {
+        var p = model.pages[k];
+        var text = (p.h || p.t || '').split(/\s[|–—:·]\s/)[0];
+        if (!text) return;
+        var words = tok.tokenizeText(text);
+        var wstems = words.map(tok.stem);
+        var shared = 0;
+        for (var i = 0; i < stems.length; i++) if (wstems.indexOf(stems[i]) !== -1) shared++;
+        if (shared === 0) return;
+        var full = shared === need;
+        // Take the window from the first shared stem to the last, padded
+        // by one word each side, so "Apply for Savings Account Online"
+        // survives intact.
+        var first = -1, last = -1;
+        for (var j = 0; j < wstems.length; j++) {
+          if (stems.indexOf(wstems[j]) !== -1) { if (first === -1) first = j; last = j; }
+        }
+        var s = Math.max(0, first - 2), e = Math.min(words.length - 1, last + 2);
+        var phrase = words.slice(s, e + 1)
+          .filter(function (w) { return !/^[0-9]+$/.test(w); }).join(' ');
+        // trim leading/trailing stopwords
+        var parts = phrase.split(' ');
+        while (parts.length && tok.STOPWORDS.has(parts[0])) parts.shift();
+        while (parts.length && tok.STOPWORDS.has(parts[parts.length - 1])) parts.pop();
+        if (parts.length < 2) return;
+        var key = parts.join(' ');
+        var slot = titleHits[key] || (titleHits[key] = { count: 0, full: full });
+        slot.count++;
+        if (full) slot.full = true;
+      });
+      Object.keys(titleHits)
+        .sort(function (a, b) {
+          var A = titleHits[a], B = titleHits[b];
+          if (A.full !== B.full) return A.full ? -1 : 1;
+          return B.count - A.count;
+        })
+        .forEach(function (phrase) {
+          add(phrase, titleHits[phrase].full ? 'title' : 'related', titleHits[phrase].count);
+        });
+    }
+
+    // 3. Intent templates — always available, clearly labelled.
+    INTENT_TEMPLATES.forEach(function (tpl) {
+      add(tpl.replace('{kw}', base), 'template', 0);
+    });
+
+    // proven sources first, then related, then templates
+    var order = { anchor: 0, title: 1, related: 2, template: 3 };
+    out.sort(function (a, b) {
+      if (order[a.source] !== order[b.source]) return order[a.source] - order[b.source];
+      return b.count - a.count;
+    });
+    return out.slice(0, limit);
   }
 
   /**
@@ -404,6 +578,9 @@
 
   ns.intel = {
     buildModel: buildModel,
+    stemCommonness: stemCommonness,
+    pickTarget: pickTarget,
+    keywordVariants: keywordVariants,
     authority: authority,
     clickDepth: clickDepth,
     cannibalization: cannibalization,

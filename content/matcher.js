@@ -384,6 +384,7 @@
       else if (g.rep) active.push(g.rep);
     });
 
+    var model = opts.model || null;
     var root = findContentRoot(doc);
     var words = extractWords(root, doc);
     // Safety net: if root selection landed on a subtree with no usable
@@ -413,6 +414,14 @@
         var n = stems.length;
         var rec = null;
 
+        // Single-word targets are only trustworthy when the word is
+        // specific: 4+ chars, and not something most pages of the site
+        // say anyway ("account", "offer" on a bank site).
+        if (n === 1) {
+          if (stems[0].length < 4) continue;
+          if (model && model.totalDocs >= 20 && ns.intel.stemCommonness(model, stems[0]) > 0.3) continue;
+        }
+
         // Exact only makes sense anchored at the first token.
         if (word.w === stems[0]) {
           var exactEnd = exactAt(words, pos, stems);
@@ -422,16 +431,23 @@
         }
         if (!rec && n > 1) {
           var win = windowAt(words, pos, stems);
-          if (win.hits === n) {
+          var spread = win.last - win.first; // words between first and last hit
+          if (win.hits === n && spread <= 4) {
+            // A tight loose match ("link ... building" within 5 words) is
+            // a real anchor; a sprawling one is two topics in one sentence.
             rec = { matchType: 'loose', startIdx: win.first, endIdx: win.last };
-          } else if (n >= 3 && win.hits >= n - 1 && win.hits >= 2 && win.headHit) {
-            // Partial matches must include the slug's head keyword —
-            // matching only the generic tail ("generally available") of
-            // "ai-gateway-is-generally-available" is a false positive.
+          } else if (model && n >= 3 && win.hits >= n - 1 && win.hits >= 2 &&
+                     win.headHit && spread <= 3) {
+            // Partial matches only with site intelligence to vouch for
+            // topical fit, and only when the hits sit close together.
             rec = { matchType: 'partial', startIdx: win.first, endIdx: win.last };
           }
         }
         if (!rec) continue;
+        // Anchors never start or end on a stopword ("and start building"
+        // → "start building").
+        while (rec.endIdx > rec.startIdx && tok.STOPWORDS.has(words[rec.startIdx].w)) rec.startIdx++;
+        while (rec.endIdx > rec.startIdx && tok.STOPWORDS.has(words[rec.endIdx].w)) rec.endIdx--;
         rec.inHeading = words[rec.startIdx].inHeading;
         rec.target = target;
         rec.phraseKind = phrase.kind;
@@ -445,7 +461,6 @@
     // With a crawl model available, rank by the 0-100 opportunity score
     // (match quality + topical relevance + how badly the target needs
     // links + placement). Without one, fall back to the structural rank.
-    var model = opts.model || null;
     var pageVec = null, medianIn = 0;
     if (model && ns.textstats && ns.intel) {
       var pageText = [];
@@ -472,7 +487,16 @@
       });
       rec.score = scored.score;
       rec.reasons = scored.reasons;
+      rec.sim = scored.sim;
     });
+
+    // With enough crawl data, a non-exact match between two pages that
+    // share no topical vocabulary is coincidence, not an opportunity.
+    if (model && model.totalDocs >= 20) {
+      all = all.filter(function (rec) {
+        return rec.matchType === 'exact' || rec.sim === null || rec.sim >= 0.02;
+      });
+    }
 
     all.sort(function (a, b) {
       if (a.score !== null && b.score !== null && a.score !== b.score) return b.score - a.score;
@@ -508,6 +532,7 @@
       return {
         url: rec.target.url,
         phrase: rec.target.phrase,
+        keyword: rec.target.primary || rec.target.phrase,
         title: rec.target.title || null,
         depth: rec.target.depth,
         matchType: rec.matchType,

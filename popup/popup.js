@@ -2,8 +2,9 @@
  * Link Lens — popup/popup.js
  * Scan tab: injects the content-script bundle into the active tab
  * (activeTab + scripting) and drives LL_SCAN / LL_REBUILD / LL_CLEAR.
- * Bulk tab: validates up to 20 same-domain URLs, starts LL_BULK_START in
- * the tab, renders streamed progress, and builds the combined CSV.
+ * Bulk / Keyword / Site intel tabs: drive the background worker
+ * (crawler + planner in the offscreen document) via background.js and
+ * render its persisted progress, so runs survive the panel closing.
  */
 'use strict';
 
@@ -26,7 +27,6 @@ var CONTENT_FILES = [
 
 var tab = null;         // active tab
 var origin = null;      // its origin
-var bulkRows = null;    // finished bulk rows for CSV download
 var lastSummary = null; // last scan summary, for the debug-info copy
 
 /* ------------------------------------------------------------------ *
@@ -196,7 +196,7 @@ function parseBulkUrls(raw) {
   var lines = raw.split(/\r?\n/).map(function (l) { return l.trim(); })
     .filter(function (l) { return l.length > 0; });
   if (lines.length === 0) throw new Error('Paste at least one URL.');
-  if (lines.length > 20) throw new Error('Maximum 20 URLs per batch (you pasted ' + lines.length + ').');
+  if (lines.length > 500) throw new Error('Maximum 500 URLs per batch (you pasted ' + lines.length + ').');
   var seen = new Set();
   var urls = [];
   for (var i = 0; i < lines.length; i++) {
@@ -211,46 +211,6 @@ function parseBulkUrls(raw) {
   return urls;
 }
 
-function renderBulkProgress(entries, total) {
-  var box = $('bulk-progress');
-  box.innerHTML = '';
-  entries.forEach(function (e) {
-    var row = document.createElement('div');
-    row.className = 'bl-row';
-    var st = document.createElement('span');
-    st.className = 'bl-status ' + (e.ok ? 'ok' : 'fail');
-    st.textContent = e.ok ? '✓' : '✕';
-    var url = document.createElement('span');
-    url.className = 'bl-url';
-    url.textContent = e.url + (e.ok ? '' : ' — ' + (e.error || 'failed'));
-    var meta = document.createElement('span');
-    meta.className = 'bl-meta';
-    meta.textContent = e.ok ? e.found + ' found' : '';
-    row.appendChild(st); row.appendChild(url); row.appendChild(meta);
-    box.appendChild(row);
-  });
-  if (entries.length < total) {
-    var pending = document.createElement('div');
-    pending.className = 'bl-row';
-    pending.innerHTML = '<span class="bl-status pending">◌</span>' +
-      '<span class="bl-url">fetching ' + (entries.length + 1) + ' of ' + total + '…</span>';
-    box.appendChild(pending);
-  }
-  show(box);
-}
-
-function showBulkDone(state) {
-  bulkRows = state.rows || [];
-  $('bulk-count').textContent = bulkRows.length;
-  var failures = state.failures || [];
-  $('bulk-sub').textContent =
-    (state.total || 0) + ' URLs processed · ' + failures.length + ' failed' +
-    (state.status === 'cancelled' ? ' · batch stopped early' : '');
-  show($('bulk-done'));
-  hide($('btn-bulk-cancel'));
-  $('btn-bulk').disabled = false;
-}
-
 function startBulk() {
   hide($('bulk-error'));
   hide($('bulk-done'));
@@ -263,18 +223,27 @@ function startBulk() {
   }
   $('btn-bulk').disabled = true;
   show($('btn-bulk-cancel'));
-  renderBulkProgress([], urls.length);
+  var resume = canResume('audit');
 
-  sendToBackground({ type: 'LL_CLEAR_BULK', origin: origin }).then(function () {
-    return ensureInjected();
+  // The site index must exist for the background worker; a scan builds it.
+  ensureInjected().then(function () {
+    return sendToTab({ type: 'LL_INDEX_URLS', force: false });
   }).then(function () {
-    return sendToTab({ type: 'LL_BULK_START', urls: urls });
+    // A paused batch resumes where it stopped; anything else starts clean.
+    if (!resume) return sendToBackground({ type: 'LL_PLAN_CLEAR', mode: 'audit', origin: origin });
+  }).then(function () {
+    return sendToBackground({
+      type: 'LL_PLAN_START', mode: 'audit', origin: origin, urls: urls, fresh: !resume,
+      limit: 500, delayMs: parseInt($('crawl-speed').value, 10) || 1000
+    });
   }).then(function (res) {
     if (!res || !res.ok) {
       $('btn-bulk').disabled = false;
       hide($('btn-bulk-cancel'));
       fail($('bulk-error'), (res && res.error) || 'Could not start the batch.');
+      return;
     }
+    refreshRun('audit');
   }).catch(function (err) {
     $('btn-bulk').disabled = false;
     hide($('btn-bulk-cancel'));
@@ -282,43 +251,101 @@ function startBulk() {
   });
 }
 
-function restoreBulkState() {
-  sendToBackground({ type: 'LL_GET_BULK', origin: origin }).then(function (res) {
-    var state = res && res.state;
-    if (!state) return;
-    if (state.progress && state.progress.length) {
-      renderBulkProgress(state.progress, state.total || state.progress.length);
-    }
-    if (state.status === 'done' || state.status === 'cancelled') {
-      showBulkDone(state);
-    } else if (state.status === 'running') {
-      $('btn-bulk').disabled = true;
-      show($('btn-bulk-cancel'));
-    }
+var runState = { audit: null, keywords: null }; // last known background state
+
+/** Is there a paused run of this mode that the Start button should resume? */
+function canResume(mode, keywords) {
+  var p = runState[mode];
+  if (!p || p.status === 'running' || !(p.remaining > 0)) return false;
+  if (mode === 'keywords') {
+    // Changing the keyword list means a new run, not a resume.
+    var prev = (p.keywords || []).slice().sort().join('\n');
+    var next = (keywords || []).slice().sort().join('\n');
+    return prev === next;
+  }
+  return true;
+}
+
+/** Render progress for a background run (audit / keywords) into its tab. */
+function renderRun(mode, p) {
+  runState[mode] = p || null;
+  var ids = mode === 'audit'
+    ? { prog: 'bulk-progress', btn: 'btn-bulk', stop: 'btn-bulk-cancel', done: 'bulk-done',
+        count: 'bulk-count', sub: 'bulk-sub', err: 'bulk-error' }
+    : { prog: 'kw-progress', btn: 'btn-kw', stop: 'btn-kw-cancel', done: 'kw-done',
+        count: 'kw-count', sub: 'kw-sub', err: 'kw-error' };
+  if (!p) { hide($(ids.prog)); return; }
+  if (p.status === 'error') {
+    fail($(ids.err), p.error || p.lastError || 'The background run hit an error.');
+    $(ids.btn).disabled = false; hide($(ids.stop)); hide($(ids.prog));
+    return;
+  }
+  var running = p.status === 'running';
+  var pct = p.total ? Math.round((p.done + p.failed) / p.total * 100) : 0;
+  $(ids.prog).innerHTML = '<div>' + (running ? 'Checking… ' : 'Checked ') + pct + '% · ' +
+    p.done + ' of ' + p.total + ' pages · ' + p.links + ' found' +
+    (p.failed ? ' · ' + p.failed + ' failed' : '') +
+    (p.linked ? ' · ' + p.linked + ' already linked' : '') +
+    '</div><div class="bar"><i style="width:' + pct + '%"></i></div>';
+  show($(ids.prog));
+  $(ids.btn).disabled = running;
+  $(ids.stop).classList.toggle('hidden', !running);
+  if (!running && p.remaining > 0) {
+    $(ids.btn).textContent = '▶ Resume (' + p.remaining + ' pages left)';
+  } else {
+    $(ids.btn).textContent = mode === 'audit' ? 'Run bulk audit'
+      : 'Check the whole site for link placements';
+  }
+  if (!running && (p.status === 'done' || p.status === 'paused')) {
+    $(ids.count).textContent = p.links;
+    $(ids.sub).textContent = p.done + ' pages checked · ' + (p.failed || 0) + ' failed' +
+      (p.linked ? ' · ' + p.linked + ' page/keyword pairs already linked' : '') +
+      (p.status === 'paused' ? ' · paused' : '');
+    if (p.links > 0 || p.status === 'done') show($(ids.done));
+  }
+}
+
+function refreshRun(mode) {
+  sendToBackground({ type: 'LL_PLAN_STATUS', mode: mode, origin: origin }).then(function (res) {
+    renderRun(mode, res && res.plan);
   });
 }
 
-function downloadBulkCsv() {
-  if (!bulkRows) return;
-  var csv = ns.csv.build(
-    ['source_url', 'anchor_text', 'target_url', 'match_type', 'position', 'context_sentence'],
-    bulkRows
-  );
-  ns.csv.download('link-lens-bulk-' + new URL(origin).hostname + '.csv', csv, document);
+function downloadRunCsv(mode) {
+  sendToBackground({ type: 'LL_PLAN_ROWS', mode: mode, origin: origin }).then(function (res) {
+    if (!res || !res.rows || !res.rows.length) return;
+    var header = mode === 'keywords'
+      ? ['page_url', 'suggested_anchor', 'keyword', 'target_url', 'position', 'relevance', 'context_sentence']
+      : ['source_url', 'anchor_text', 'target_url', 'target_keyword', 'target_title', 'score',
+         'match_type', 'position', 'target_inbound_links', 'why', 'context_sentence'];
+    var name = mode === 'keywords' ? 'keyword-placements' : (mode === 'audit' ? 'bulk-audit' : 'site-plan');
+    ns.csv.download('link-lens-' + name + '-' + new URL(origin).hostname + '.csv',
+      ns.csv.build(header, res.rows), document);
+  });
 }
+
+function restoreBulkState() {
+  refreshRun('audit');
+  refreshRun('keywords');
+}
+
+function downloadBulkCsv() { downloadRunCsv('audit'); }
 
 /* ------------------------------------------------------------------ *
  * Keyword tab
  * ------------------------------------------------------------------ */
 
-var kwRows = null;
-var kwLive = [];
+
+function keywordList() {
+  return $('kw-keyword').value.split(/[,\n;]+/).map(function (k) { return k.trim(); })
+    .filter(function (k, i, arr) { return k && arr.indexOf(k) === i; });
+}
 
 function startKeyword() {
   hide($('kw-error'));
   hide($('kw-done'));
-  var keyword = $('kw-keyword').value.trim();
-  if (!keyword) { fail($('kw-error'), 'Enter a keyword first.'); return; }
+  var keywords = keywordList();
+  if (keywords.length === 0) { fail($('kw-error'), 'Enter at least one keyword.'); return; }
   var targetUrl = $('kw-target').value.trim() || null;
   if (targetUrl) {
     try {
@@ -328,19 +355,28 @@ function startKeyword() {
       }
     } catch (e) { fail($('kw-error'), 'Target URL is not a valid URL.'); return; }
   }
-  kwLive = [];
   $('btn-kw').disabled = true;
   show($('btn-kw-cancel'));
-  renderKwProgress([], 0);
+  var resume = canResume('keywords', keywords);
 
   ensureInjected().then(function () {
-    return sendToTab({ type: 'LL_KEYWORD_START', keyword: keyword, targetUrl: targetUrl });
+    return sendToTab({ type: 'LL_INDEX_URLS', force: false }); // guarantees an index
+  }).then(function () {
+    if (!resume) return sendToBackground({ type: 'LL_PLAN_CLEAR', mode: 'keywords', origin: origin });
+  }).then(function () {
+    return sendToBackground({
+      type: 'LL_PLAN_START', mode: 'keywords', origin: origin, fresh: !resume,
+      keywords: keywords, targetUrl: targetUrl, limit: 2000,
+      delayMs: parseInt($('crawl-speed').value, 10) || 1000
+    });
   }).then(function (res) {
     if (!res || !res.ok) {
       $('btn-kw').disabled = false;
       hide($('btn-kw-cancel'));
       fail($('kw-error'), (res && res.error) || 'Could not start.');
+      return;
     }
+    refreshRun('keywords');
   }).catch(function (err) {
     $('btn-kw').disabled = false;
     hide($('btn-kw-cancel'));
@@ -348,66 +384,66 @@ function startKeyword() {
   });
 }
 
-function renderKwProgress(entries, total) {
-  var box = $('kw-progress');
-  box.innerHTML = '';
-  entries.forEach(function (e) {
-    var row = document.createElement('div');
-    row.className = 'bl-row';
-    row.innerHTML = '<span class="bl-status ' + (e.ok ? 'ok' : 'fail') + '">' +
-      (e.ok ? '✓' : '✕') + '</span>';
-    var url = document.createElement('span');
-    url.className = 'bl-url';
-    url.textContent = e.url + (e.ok ? (e.alreadyLinked ? ' — already linked ✓' : '') : ' — ' + (e.error || 'failed'));
-    var meta = document.createElement('span');
-    meta.className = 'bl-meta';
-    meta.textContent = e.ok && !e.alreadyLinked ? (e.found + ' found') : '';
-    row.appendChild(url); row.appendChild(meta);
-    box.appendChild(row);
+function showVariants() {
+  hide($('kw-error'));
+  var keywords = keywordList();
+  if (keywords.length === 0) { fail($('kw-error'), 'Enter a keyword first.'); return; }
+  $('btn-kw-variants').disabled = true;
+  ensureInjected().then(function () {
+    return sendToTab({ type: 'LL_KEYWORD_VARIANTS', keywords: keywords,
+      targetUrl: $('kw-target').value.trim() || null });
+  }).then(function (res) {
+    $('btn-kw-variants').disabled = false;
+    if (!res || !res.ok) { fail($('kw-error'), (res && res.error) || 'Could not build variations.'); return; }
+    var box = $('kw-variants');
+    box.innerHTML = '';
+    res.keywords.forEach(function (k) {
+      var head = document.createElement('div');
+      head.className = 'chips-head';
+      head.textContent = k.keyword + (k.targetUrl ? ' → ' + k.targetUrl.replace(origin, '') : ' (no target found)');
+      box.appendChild(head);
+      if (!k.variants.length) return;
+      k.variants.forEach(function (v) {
+        var chip = document.createElement('span');
+        chip.className = 'chip ' + v.source;
+        chip.title = v.source === 'template' ? 'suggested phrasing (not yet used on the site)'
+          : v.source === 'anchor' ? 'anchor already used for this page ' + v.count + '×'
+          : v.source === 'title' ? 'from a page title on this site'
+          : 'related page title on this site';
+        chip.textContent = v.text;
+        if (v.count > 1) { var n = document.createElement('small'); n.textContent = '×' + v.count; chip.appendChild(n); }
+        chip.addEventListener('click', function () {
+          var cur = keywordList();
+          if (cur.indexOf(v.text) === -1) cur.push(v.text);
+          $('kw-keyword').value = cur.join(', ');
+        });
+        box.appendChild(chip);
+      });
+    });
+    if (!res.hasModel) {
+      var note = document.createElement('div');
+      note.className = 'chips-head';
+      note.textContent = 'Run a site crawl (Site intel tab) to mine real phrasings from your pages — only generic suggestions are shown now.';
+      box.appendChild(note);
+    }
+    show(box);
+  }).catch(function (err) {
+    $('btn-kw-variants').disabled = false;
+    fail($('kw-error'), friendlyError(err));
   });
-  if (total === 0 || entries.length < total) {
-    var pending = document.createElement('div');
-    pending.className = 'bl-row';
-    pending.innerHTML = '<span class="bl-status pending">◌</span>' +
-      '<span class="bl-url">checking ' + (entries.length + 1) +
-      (total ? ' of ' + total : '') + '…</span>';
-    box.appendChild(pending);
-  }
-  show(box);
-}
-
-function showKwDone(msg) {
-  kwRows = msg.rows || [];
-  $('kw-count').textContent = kwRows.length;
-  $('kw-sub').textContent =
-    (msg.total || 0) + ' pages checked · ' + (msg.skippedLinked || 0) + ' already link the target · ' +
-    ((msg.failures || []).length) + ' failed' +
-    (msg.targetUrl ? ' · target: ' + msg.targetUrl : '');
-  show($('kw-done'));
-  hide($('btn-kw-cancel'));
-  $('btn-kw').disabled = false;
-}
-
-function downloadKwCsv() {
-  if (!kwRows) return;
-  var csv = ns.csv.build(
-    ['page_url', 'suggested_anchor', 'keyword', 'target_url', 'position', 'relevance', 'context_sentence'],
-    kwRows
-  );
-  ns.csv.download('link-lens-keyword-' + new URL(origin).hostname + '.csv', csv, document);
 }
 
 /** Highlight the keyword's opportunities inline on the CURRENT page. */
 function keywordHere() {
   hide($('kw-error'));
   hide($('kw-here-result'));
-  var keyword = $('kw-keyword').value.trim();
-  if (!keyword) { fail($('kw-error'), 'Enter a keyword first.'); return; }
+  var keywords = keywordList();
+  if (keywords.length === 0) { fail($('kw-error'), 'Enter a keyword first.'); return; }
   var targetUrl = $('kw-target').value.trim() || null;
   $('btn-kw-here').disabled = true;
 
   ensureInjected().then(function () {
-    return sendToTab({ type: 'LL_KEYWORD_HERE', keyword: keyword, targetUrl: targetUrl });
+    return sendToTab({ type: 'LL_KEYWORD_HERE', keywords: keywords, targetUrl: targetUrl });
   }).then(function (res) {
     $('btn-kw-here').disabled = false;
     if (!res || !res.ok) {
@@ -422,9 +458,10 @@ function keywordHere() {
       $('kw-here-count').textContent = res.found;
       $('kw-here-label').textContent = res.found === 1
         ? 'spot highlighted on this page' : 'spots highlighted on this page';
-      $('kw-here-sub').textContent = res.targetUrl
-        ? 'linking to: ' + res.targetUrl
-        : 'no matching target in the index — add a target URL above';
+      $('kw-here-sub').textContent = (res.keywords || []).map(function (k) {
+        return k.keyword + ': ' + (k.alreadyLinked ? 'already linked' : k.found + ' spot' + (k.found === 1 ? '' : 's')) +
+          (k.targetUrl ? ' → ' + k.targetUrl.replace(origin, '') : ' (no target)');
+      }).join(' · ');
     }
     show($('kw-here-result'));
   }).catch(function (err) {
@@ -598,7 +635,7 @@ function renderPlanStatus(p) {
 }
 
 function refreshPlanStatus() {
-  sendToBackground({ type: 'LL_PLAN_STATUS', origin: origin }).then(function (res) {
+  sendToBackground({ type: 'LL_PLAN_STATUS', mode: 'plan', origin: origin }).then(function (res) {
     renderPlanStatus(res && res.plan);
   });
 }
@@ -607,7 +644,7 @@ function startPlan() {
   hide($('plan-error'));
   $('btn-plan').disabled = true;
   sendToBackground({
-    type: 'LL_PLAN_START', origin: origin,
+    type: 'LL_PLAN_START', mode: 'plan', origin: origin,
     limit: 500, delayMs: parseInt($('crawl-speed').value, 10) || 1000,
     maxPerPage: 3, maxPerTarget: 5, minScore: 45
   }).then(function (res) {
@@ -620,15 +657,7 @@ function startPlan() {
   });
 }
 
-function downloadPlanCsv() {
-  sendToBackground({ type: 'LL_PLAN_ROWS', origin: origin }).then(function (res) {
-    if (!res || !res.rows || !res.rows.length) return;
-    ns.csv.download('link-lens-site-plan-' + new URL(origin).hostname + '.csv',
-      ns.csv.build(['source_url', 'anchor_text', 'target_url', 'target_title', 'score',
-        'match_type', 'position', 'target_inbound_links', 'why', 'context_sentence'],
-        res.rows), document);
-  });
-}
+function downloadPlanCsv() { downloadRunCsv('plan'); }
 
 function downloadCannibalCsv() {
   if (!intelReport || !intelReport.cannibals) return;
@@ -644,8 +673,6 @@ function downloadCannibalCsv() {
  * Live messages from the tab (progress streaming)
  * ------------------------------------------------------------------ */
 
-var bulkLive = []; // progress entries received while popup is open
-
 chrome.runtime.onMessage.addListener(function (msg) {
   if (!msg || typeof msg.type !== 'string') return;
 
@@ -656,30 +683,16 @@ chrome.runtime.onMessage.addListener(function (msg) {
     show(prog);
   }
 
-  if (msg.type === 'LL_BULK_PROGRESS') {
-    bulkLive.push({ url: msg.url, ok: msg.ok, error: msg.error, found: msg.found });
-    renderBulkProgress(bulkLive, msg.total);
-  }
-
-  if (msg.type === 'LL_BULK_DONE') {
-    showBulkDone({
-      rows: msg.rows,
-      failures: msg.failures,
-      total: msg.total,
-      status: msg.cancelled ? 'cancelled' : 'done'
+  if (msg.type === 'LL_PLAN_PROGRESS' && msg.origin === origin && msg.mode && msg.mode !== 'plan') {
+    renderRun(msg.mode, {
+      status: msg.status, done: msg.done, failed: msg.failed, total: msg.total,
+      links: msg.links, error: msg.error, linked: msg.linked,
+      keywords: (runState[msg.mode] || {}).keywords || [], // progress events omit them
+      remaining: Math.max(0, (msg.total || 0) - (msg.done || 0) - (msg.failed || 0))
     });
   }
 
-  if (msg.type === 'LL_KEYWORD_PROGRESS') {
-    kwLive.push({ url: msg.url, ok: msg.ok, error: msg.error, found: msg.found, alreadyLinked: msg.alreadyLinked });
-    renderKwProgress(kwLive, msg.total);
-  }
-
-  if (msg.type === 'LL_KEYWORD_DONE') {
-    showKwDone(msg);
-  }
-
-  if (msg.type === 'LL_PLAN_PROGRESS' && msg.origin === origin) {
+  if (msg.type === 'LL_PLAN_PROGRESS' && msg.origin === origin && (!msg.mode || msg.mode === 'plan')) {
     renderPlanStatus({
       status: msg.status, done: msg.done, failed: msg.failed, total: msg.total,
       links: msg.links, error: msg.error,
@@ -771,11 +784,10 @@ document.addEventListener('DOMContentLoaded', function () {
   $('btn-kw').addEventListener('click', startKeyword);
   $('btn-kw-here').addEventListener('click', keywordHere);
   $('btn-kw-cancel').addEventListener('click', function () {
-    sendToTab({ type: 'LL_BULK_CANCEL' }).catch(function () { });
-    hide($('btn-kw-cancel'));
-    $('btn-kw').disabled = false;
+    sendToBackground({ type: 'LL_PLAN_STOP' }).then(function () { refreshRun('keywords'); });
   });
-  $('btn-kw-csv').addEventListener('click', downloadKwCsv);
+  $('btn-kw-csv').addEventListener('click', function () { downloadRunCsv('keywords'); });
+  $('btn-kw-variants').addEventListener('click', showVariants);
   $('tab-intel').addEventListener('click', function () { switchTab('intel'); });
   $('btn-crawl').addEventListener('click', startCrawl);
   $('btn-crawl-stop').addEventListener('click', function () {
@@ -817,15 +829,11 @@ document.addEventListener('DOMContentLoaded', function () {
 
   $('btn-bulk').addEventListener('click', startBulk);
   $('btn-bulk-cancel').addEventListener('click', function () {
-    sendToTab({ type: 'LL_BULK_CANCEL' }).catch(function () { });
-    hide($('btn-bulk-cancel'));
-    $('btn-bulk').disabled = false;
+    sendToBackground({ type: 'LL_PLAN_STOP' }).then(function () { refreshRun('audit'); });
   });
   $('btn-bulk-csv').addEventListener('click', downloadBulkCsv);
   $('btn-bulk-reset').addEventListener('click', function () {
-    sendToBackground({ type: 'LL_CLEAR_BULK', origin: origin });
-    bulkRows = null;
-    bulkLive = [];
+    sendToBackground({ type: 'LL_PLAN_CLEAR', mode: 'audit', origin: origin });
     hide($('bulk-done'));
     hide($('bulk-progress'));
   });

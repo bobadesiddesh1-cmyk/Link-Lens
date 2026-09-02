@@ -19,6 +19,8 @@ try {
 
 function bulkKey(origin) { return 'll_bulk:' + origin; }
 function crawlKey(origin) { return 'll_crawl:' + origin; }
+var PLAN_PREFIX = { plan: 'll_plan:', audit: 'll_audit:', keywords: 'll_kwsite:' };
+function planKey(mode, origin) { return (PLAN_PREFIX[mode] || PLAN_PREFIX.plan) + origin; }
 
 function originFromSender(sender) {
   try {
@@ -115,14 +117,16 @@ function resumeIfNeeded() {
 chrome.alarms.create('ll-crawl-watchdog', { periodInMinutes: 1 });
 function resumePlanIfNeeded() {
   return chrome.storage.local.get(null).then(function (all) {
-    var pending = Object.keys(all).filter(function (k) { return k.indexOf('ll_plan:') === 0; })
+    var pending = Object.keys(all)
+      .filter(function (k) { return /^ll_(plan|audit|kwsite):/.test(k); })
       .map(function (k) { return all[k]; })
       .filter(function (p) { return p && p.status === 'running' && p.queue && p.queue.length; });
     if (!pending.length) return;
     return toOffscreen({ type: 'LL_PLAN_PING' }).then(function (res) {
       if (res && res.running) return;
-      return toOffscreen({ type: 'LL_PLAN_START', origin: pending[0].origin,
-        delayMs: pending[0].delayMs });
+      var p = pending[0];
+      return toOffscreen({ type: 'LL_PLAN_START', mode: p.mode || 'plan', origin: p.origin,
+        delayMs: p.delayMs, keywords: p.keywords, urls: p.queue });
     });
   });
 }
@@ -220,9 +224,10 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
 
     case 'LL_PLAN_START':
       toOffscreen({
-        type: 'LL_PLAN_START', origin: msg.origin, limit: msg.limit,
-        delayMs: msg.delayMs, maxPerPage: msg.maxPerPage,
-        maxPerTarget: msg.maxPerTarget, minScore: msg.minScore, fresh: msg.fresh
+        type: 'LL_PLAN_START', mode: msg.mode || 'plan', origin: msg.origin,
+        limit: msg.limit, delayMs: msg.delayMs, maxPerPage: msg.maxPerPage,
+        maxPerTarget: msg.maxPerTarget, minScore: msg.minScore, fresh: msg.fresh,
+        urls: msg.urls, keywords: msg.keywords, targetUrl: msg.targetUrl
       }).then(sendResponse);
       return true;
 
@@ -231,28 +236,29 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
       return true;
 
     case 'LL_PLAN_STATUS':
-      chrome.storage.local.get('ll_plan:' + msg.origin).then(function (obj) {
-        var p = obj['ll_plan:' + msg.origin] || null;
+      chrome.storage.local.get(planKey(msg.mode, msg.origin)).then(function (obj) {
+        var p = obj[planKey(msg.mode, msg.origin)] || null;
         sendResponse({
           ok: true,
           plan: p ? {
-            status: p.status, done: p.done, failed: p.failed, total: p.total,
-            links: (p.rows || []).length, remaining: (p.queue || []).length,
-            updatedAt: p.updatedAt
+            mode: p.mode, status: p.status, done: p.done, failed: p.failed, total: p.total,
+            linked: p.linked || 0, links: (p.rows || []).length,
+            remaining: (p.queue || []).length, updatedAt: p.updatedAt,
+            lastError: p.lastError || null, keywords: p.keywords || []
           } : null
         });
       });
       return true;
 
     case 'LL_PLAN_ROWS':
-      chrome.storage.local.get('ll_plan:' + msg.origin).then(function (obj) {
-        var p = obj['ll_plan:' + msg.origin] || null;
-        sendResponse({ ok: true, rows: p ? p.rows : [] });
+      chrome.storage.local.get(planKey(msg.mode, msg.origin)).then(function (obj) {
+        var p = obj[planKey(msg.mode, msg.origin)] || null;
+        sendResponse({ ok: true, rows: p ? p.rows : [], mode: p ? p.mode : null });
       });
       return true;
 
     case 'LL_PLAN_CLEAR':
-      chrome.storage.local.remove('ll_plan:' + msg.origin).then(function () {
+      chrome.storage.local.remove(planKey(msg.mode, msg.origin)).then(function () {
         sendResponse({ ok: true });
       });
       return true;
